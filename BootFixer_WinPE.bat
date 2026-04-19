@@ -8,229 +8,161 @@ cls
 echo.
 echo   =============================
 echo        B O O T F I X E R
-echo       WinPE Compatible v3.0
+echo       WinPE Compatible v3.1
 echo   =============================
 echo.
 
 :: =============================================
-::   LEMEZEK LEKERDEZESE (WMIC + DISKPART)
+::   LEMEZEK LEKERDEZESE
 :: =============================================
 
 set DISKCOUNT=0
-set "DPSCRIPT=%TEMP%\bf_dp.txt"
+set "TMP_DIR=%TEMP%"
+if "%TMP_DIR%"=="" set "TMP_DIR=X:\Windows\Temp"
+set "DPSCRIPT=%TMP_DIR%\bf_dp.txt"
 
-:: Megprobaljuk WMIC-vel eloszor (gyorsabb, megbizhatobb)
-:: Ha nincs WMIC (egyes WinPE), fallback diskpart-ra
-where wmic >nul 2>&1
-if %errorlevel% equ 0 (
-    goto :DETECT_WMIC
-) else (
-    goto :DETECT_DISKPART
-)
-
-:: ----- WMIC ALAPU FELISMERES -----
-:DETECT_WMIC
-
-:: Lemezek
-for /f "tokens=1,2 delims==" %%a in ('wmic diskdrive get Index /format:list 2^>nul ^| findstr "Index"') do (
-    set /a DISKCOUNT+=1
-    set "DNUM_!DISKCOUNT!=%%b"
-)
-
-if %DISKCOUNT% equ 0 (
-    echo   Nem talalhato lemez!
-    pause
-    exit /b
-)
-
-:: Minden lemezhez adatok
-for /l %%i in (1,1,%DISKCOUNT%) do (
-    set "DMODEL_%%i=Lemez !DNUM_%%i!"
-    set "DSIZE_%%i=? GB"
-    set "DTYPE_%%i=Ismeretlen"
-    set "DWIN_%%i=Nincs Windows"
-    set "DWINLETTER_%%i="
-    set "DEFI_%%i="
-
-    :: Model
-    for /f "tokens=1,* delims==" %%a in ('wmic diskdrive where "Index=!DNUM_%%i!" get Model /format:list 2^>nul ^| findstr "Model"') do (
-        set "DMODEL_%%i=%%b"
-    )
-
-    :: Size (GB-ba szamolva)
-    for /f "tokens=1,* delims==" %%a in ('wmic diskdrive where "Index=!DNUM_%%i!" get Size /format:list 2^>nul ^| findstr "Size"') do (
-        set /a "DSIZEGB=%%b / 1073741824"
-        set "DSIZE_%%i=!DSIZEGB! GB"
-    )
-
-    :: Partition type - GPT vagy MBR
-    for /f "tokens=1,* delims==" %%a in ('wmic partition where "DiskIndex=!DNUM_%%i!" get Type /format:list 2^>nul ^| findstr /i "Type"') do (
-        set "_ptype=%%b"
-        echo !_ptype! | findstr /i "GPT" >nul 2>&1
-        if !errorlevel! equ 0 (
-            set "DTYPE_%%i=UEFI/GPT"
-        ) else (
-            echo !_ptype! | findstr /i "Installable" >nul 2>&1
-            if !errorlevel! equ 0 set "DTYPE_%%i=Legacy/MBR"
-        )
-    )
-
-    :: Ha a tipus meg nem ismert, fallback
-    if "!DTYPE_%%i!"=="Ismeretlen" (
-        :: Legtobb esetben ha nincs GPT marker, MBR
-        for /f "tokens=1,* delims==" %%a in ('wmic partition where "DiskIndex=!DNUM_%%i!" get Type /format:list 2^>nul ^| findstr /i "Type"') do (
-            set "DTYPE_%%i=Legacy/MBR"
-        )
-    )
-
-    :: EFI particio keresese (GPT: System tipus)
-    for /f "tokens=1,* delims==" %%a in ('wmic partition where "DiskIndex=!DNUM_%%i! and Type like '%%System%%'" get Index /format:list 2^>nul ^| findstr "Index"') do (
-        :: Diskpart-ban a partition number = Index + 1
-        set /a "DEFI_%%i=%%b + 1"
-    )
-)
-
-:: Windows keresese - vegigmegyunk a betujelen
-for %%d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-    if exist "%%d:\Windows\System32\winload*" (
-        :: Melyik lemezen van? - megnezzuk a volume meretet es a particio meretet
-        for /l %%i in (1,1,%DISKCOUNT%) do (
-            if "!DWINLETTER_%%i!"=="" (
-                :: Ellenorizzuk: van-e particio ezen a disken ami megfelel
-                for /f "tokens=1,* delims==" %%a in ('wmic partition where "DiskIndex=!DNUM_%%i!" get Size /format:list 2^>nul ^| findstr "Size"') do (
-                    :: Logikai disk meret osszehasonlitas
-                    for /f "tokens=1,* delims==" %%x in ('wmic logicaldisk where "DeviceID='%%d:'" get Size /format:list 2^>nul ^| findstr "Size"') do (
-                        if "%%b"=="%%y" (
-                            set "DWIN_%%i=Windows %%d:\"
-                            set "DWINLETTER_%%i=%%d"
-                        )
-                    )
-                )
-            )
-        )
-    )
-)
-
-:: Fallback: ha nem talaltuk meg a lemez-betujel osszekottest, egyszerubb modszer
-:: Megnezzuk melyik lemezen van C: altalaban
-for /l %%i in (1,1,%DISKCOUNT%) do (
-    if "!DWINLETTER_%%i!"=="" (
-        :: Ha a disk 0 es van C:\Windows -> disk 0
-        if "!DNUM_%%i!"=="0" (
-            if exist "C:\Windows\System32\winload*" (
-                set "DWIN_%%i=Windows C:\"
-                set "DWINLETTER_%%i=C"
-            )
-        )
-    )
-)
-
-:: Extra fallback - barmelyik drive letter-nel
-for /l %%i in (1,1,%DISKCOUNT%) do (
-    if "!DWINLETTER_%%i!"=="" (
-        for %%d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-            if "!DWINLETTER_%%i!"=="" (
-                if exist "%%d:\Windows\System32\winload*" (
-                    :: Diskpart detail volume-mal ellenorizzuk
-                    set "_found=0"
-                    for /f "tokens=2" %%v in ('echo list volume ^> "%DPSCRIPT%" ^& diskpart /s "%DPSCRIPT%" 2^>nul ^| findstr /i /c:" %%d "') do (
-                        set "_found=1"
-                    )
-                    if "!_found!"=="0" (
-                        set "DWIN_%%i=Windows %%d:\"
-                        set "DWINLETTER_%%i=%%d"
-                    )
-                )
-            )
-        )
-    )
-)
-
-goto :SHOW_DISKS
-
-:: ----- DISKPART ALAPU FELISMERES (WMIC NELKUL) -----
-:DETECT_DISKPART
-
+:: ---- Diskpart list disk - ez MINDENHOL mukodik ----
 echo list disk > "%DPSCRIPT%"
-diskpart /s "%DPSCRIPT%" > "%TEMP%\bf_dp.txt" 2>nul
+diskpart /s "%DPSCRIPT%" > "%TMP_DIR%\bf_disklist.txt" 2>nul
 
-:: Diskpart "list disk" kimenet formatum:
+:: Diskpart "list disk" kimenet pelda:
 ::   Disk ###  Status         Size     Free     Dyn  Gpt
 ::   --------  -------------  -------  -------  ---  ---
 ::   Disk 0    Online          931 GB      0 B         *
 ::   Disk 1    Online           58 GB      0 B
+::
+:: A * az utolso oszlopban = GPT lemez
 
-for /f "usebackq skip=1 tokens=*" %%a in ("%TEMP%\bf_dp.txt") do (
-    set "_line=%%a"
-    :: Csak "Disk " -el kezdodo sorok
-    echo !_line! | findstr /b /c:"  Disk " >nul 2>&1
-    if !errorlevel! equ 0 (
-        :: Disk szam kinyerese
-        for /f "tokens=2" %%n in ("!_line!") do (
+for /f "tokens=*" %%L in ('type "%TMP_DIR%\bf_disklist.txt" ^| findstr /b /c:"  Disk "') do (
+    set "_line=%%L"
+    :: Kiszurjuk a fejlec sort (Disk ### vagy Disk ---)
+    echo !_line! | findstr /c:"---" >nul 2>&1
+    if !errorlevel! neq 0 (
+        echo !_line! | findstr /c:"###" >nul 2>&1
+        if !errorlevel! neq 0 (
+            :: Ez egy valos lemez sor
             set /a DISKCOUNT+=1
-            set "DNUM_!DISKCOUNT!=%%n"
-            set "DMODEL_!DISKCOUNT!=Lemez %%n"
-            set "DWIN_!DISKCOUNT!=Nincs Windows"
-            set "DWINLETTER_!DISKCOUNT!="
-            set "DEFI_!DISKCOUNT!="
 
-            :: GPT flag check (csillag az utolso oszlopban)
-            echo !_line! | findstr /c:"*" >nul 2>&1
-            if !errorlevel! equ 0 (
-                set "DTYPE_!DISKCOUNT!=UEFI/GPT"
-            ) else (
-                set "DTYPE_!DISKCOUNT!=Legacy/MBR"
+            :: Disk szam (2. token)
+            for /f "tokens=2" %%n in ("!_line!") do (
+                set "DNUM_!DISKCOUNT!=%%n"
             )
 
-            :: Size kinyerese
+            :: Meret (4. es 5. token, pl "931 GB")
             for /f "tokens=4,5" %%s in ("!_line!") do (
                 set "DSIZE_!DISKCOUNT!=%%s %%t"
             )
+
+            :: GPT check (csillag a sorban)
+            set "DTYPE_!DISKCOUNT!=Legacy/MBR"
+            echo !_line! | findstr /c:"*" >nul 2>&1
+            if !errorlevel! equ 0 (
+                set "DTYPE_!DISKCOUNT!=UEFI/GPT"
+            )
+
+            :: Alapertelmezett ertekek
+            set "DMODEL_!DISKCOUNT!=Lemez !DISKCOUNT!"
+            set "DWIN_!DISKCOUNT!=Nincs Windows"
+            set "DWINLETTER_!DISKCOUNT!="
+            set "DEFI_!DISKCOUNT!="
         )
     )
 )
 
 if %DISKCOUNT% equ 0 (
     echo   Nem talalhato lemez!
+    echo   [Debug] Diskpart kimenet:
+    type "%TMP_DIR%\bf_disklist.txt"
     pause
     exit /b
 )
 
-:: EFI particio es Windows keresese - diskpart-tal
+:: ---- Lemez nevek lekerdezese WMIC-vel (ha elerheto) ----
+where wmic >nul 2>&1
+if %errorlevel% equ 0 (
+    for /l %%i in (1,1,%DISKCOUNT%) do (
+        for /f "tokens=2 delims==" %%m in ('wmic diskdrive where "Index=!DNUM_%%i!" get Model /value 2^>nul ^| findstr /i "Model"') do (
+            :: Trailing space/CR eltavolitasa
+            set "_rawmodel=%%m"
+            for /f "tokens=*" %%c in ("!_rawmodel!") do set "DMODEL_%%i=%%c"
+        )
+    )
+)
+
+:: ---- EFI particio keresese lemezenként ----
 for /l %%i in (1,1,%DISKCOUNT%) do (
     (
         echo select disk !DNUM_%%i!
         echo list partition
     ) > "%DPSCRIPT%"
-    diskpart /s "%DPSCRIPT%" > "%TEMP%\bf_parts.txt" 2>nul
+    diskpart /s "%DPSCRIPT%" > "%TMP_DIR%\bf_parts_%%i.txt" 2>nul
 
-    :: System particio (EFI)
-    for /f "tokens=2" %%p in ('type "%TEMP%\bf_parts.txt" ^| findstr /i "System"') do (
-        set "DEFI_%%i=%%p"
+    :: "System" tipusu particio = EFI particio GPT-nel
+    for /f "tokens=*" %%P in ('type "%TMP_DIR%\bf_parts_%%i.txt" ^| findstr /i "System"') do (
+        for /f "tokens=2" %%n in ("%%P") do (
+            set "DEFI_%%i=%%n"
+        )
     )
 )
 
-:: Windows keresese betujel alapjan
+:: ---- Windows keresese: vegigmegyunk az osszes betujelen ----
+:: Eloszor megnezzuk melyik betujel melyik lemezhez tartozik
 for %%d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
     if exist "%%d:\Windows\System32\winload*" (
-        :: Alapertelmezetten disk 0-hoz rendeljuk
-        for /l %%i in (1,1,%DISKCOUNT%) do (
-            if "!DWINLETTER_%%i!"=="" (
-                set "DWIN_%%i=Windows %%d:\"
-                set "DWINLETTER_%%i=%%d"
-                goto :WINPE_FOUND
+        :: Megtalaltuk a Windows-t a %%d meghajtón
+        :: Most kideritjuk melyik fizikai lemezen van
+
+        :: Diskpart-tal detail volume
+        echo list volume > "%DPSCRIPT%"
+        diskpart /s "%DPSCRIPT%" > "%TMP_DIR%\bf_volumes.txt" 2>nul
+
+        :: Keressuk a volume-ot aminek %%d a betujele
+        set "_volnum="
+        for /f "tokens=*" %%V in ('type "%TMP_DIR%\bf_volumes.txt" ^| findstr /i /c:" %%d "') do (
+            for /f "tokens=2" %%n in ("%%V") do (
+                set "_volnum=%%n"
             )
         )
-        :WINPE_FOUND
+
+        if defined _volnum (
+            :: Detail volume megmondja melyik disken van
+            (
+                echo select volume !_volnum!
+                echo detail volume
+            ) > "%DPSCRIPT%"
+            diskpart /s "%DPSCRIPT%" > "%TMP_DIR%\bf_voldet.txt" 2>nul
+
+            :: "Disk" sor keresese a detail volume kimenetben
+            for /f "tokens=*" %%D in ('type "%TMP_DIR%\bf_voldet.txt" ^| findstr /r /c:"Disk [0-9]"') do (
+                for /f "tokens=2" %%x in ("%%D") do (
+                    :: Megvan a disk szam, hozzarendeljuk
+                    for /l %%i in (1,1,%DISKCOUNT%) do (
+                        if "!DNUM_%%i!"=="%%x" (
+                            if "!DWINLETTER_%%i!"=="" (
+                                set "DWIN_%%i=Windows %%d:\"
+                                set "DWINLETTER_%%i=%%d"
+                            )
+                        )
+                    )
+                )
+            )
+        ) else (
+            :: Fallback: ha nem talaltuk a volume-ot, rendeljuk az elso Windows-mentes lemezhez
+            for /l %%i in (1,1,%DISKCOUNT%) do (
+                if "!DWINLETTER_%%i!"=="" (
+                    set "DWIN_%%i=Windows %%d:\"
+                    set "DWINLETTER_%%i=%%d"
+                    goto :WIN_ASSIGNED
+                )
+            )
+            :WIN_ASSIGNED
+        )
     )
 )
-
-goto :SHOW_DISKS
 
 :: =============================================
 ::   LEMEZEK KIIRASA
 :: =============================================
-:SHOW_DISKS
 
 echo   Talalt lemezek:
 echo   -------------------------------------------------------
@@ -248,7 +180,6 @@ echo.
 set /p "CHOICE=  Melyik lemezt javitsam? [szam]: "
 if "%CHOICE%"=="0" exit /b
 
-:: Validacio
 set "VALID=0"
 for /l %%i in (1,1,%DISKCOUNT%) do (
     if "%CHOICE%"=="%%i" set "VALID=1"
@@ -308,9 +239,9 @@ if "!SELEFI!"=="" (
         echo select disk !SELDISK!
         echo list partition
     ) > "%DPSCRIPT%"
-    diskpart /s "%DPSCRIPT%" > "%TEMP%\bf_efi.txt" 2>nul
-    for /f "tokens=2" %%p in ('type "%TEMP%\bf_efi.txt" ^| findstr /i "System"') do (
-        set "SELEFI=%%p"
+    diskpart /s "%DPSCRIPT%" > "%TMP_DIR%\bf_efi.txt" 2>nul
+    for /f "tokens=*" %%P in ('type "%TMP_DIR%\bf_efi.txt" ^| findstr /i "System"') do (
+        for /f "tokens=2" %%n in ("%%P") do set "SELEFI=%%n"
     )
 )
 
@@ -333,8 +264,6 @@ for %%l in (Z Y X W V U T S R Q) do (
     echo assign letter=!EFILETTER!
 ) > "%DPSCRIPT%"
 diskpart /s "%DPSCRIPT%" >nul 2>&1
-
-:: Varas
 ping 127.0.0.1 -n 3 >nul 2>&1
 
 if not exist "!EFILETTER!:\" (
@@ -398,20 +327,21 @@ echo   [1/4] Aktiv particio beallitasa...
     echo select disk !SELDISK!
     echo list partition
 ) > "%DPSCRIPT%"
-diskpart /s "%DPSCRIPT%" > "%TEMP%\bf_legp.txt" 2>nul
+diskpart /s "%DPSCRIPT%" > "%TMP_DIR%\bf_legp.txt" 2>nul
 
 set "ACTIVEPART="
 :: Elso particio mint default
-for /f "tokens=2" %%a in ('type "%TEMP%\bf_legp.txt" ^| findstr /r /c:"Partition [0-9]"') do (
-    if "!ACTIVEPART!"=="" set "ACTIVEPART=%%a"
+for /f "tokens=*" %%P in ('type "%TMP_DIR%\bf_legp.txt" ^| findstr /r /c:"Partition [0-9]"') do (
+    for /f "tokens=2" %%n in ("%%P") do (
+        if "!ACTIVEPART!"=="" set "ACTIVEPART=%%n"
+    )
 )
 
-:: Van-e mar aktiv?
-findstr /i /c:"*" "%TEMP%\bf_legp.txt" >nul 2>&1
+:: Van-e mar aktiv? (csillag az aktiv particio soran)
+findstr /c:"*" "%TMP_DIR%\bf_legp.txt" >nul 2>&1
 if !errorlevel! equ 0 (
     echo   [OK] Aktiv particio rendben.
 ) else (
-    :: Aktívva tesszük az elsőt
     (
         echo select disk !SELDISK!
         echo select partition !ACTIVEPART!
@@ -454,7 +384,6 @@ if defined ACTIVEPART if defined TMPLETTER (
         echo   [!] BCDBoot figyelmeztetes
     )
 
-    :: Betujel eltavolitasa
     (
         echo select disk !SELDISK!
         echo select partition !ACTIVEPART!
@@ -483,8 +412,7 @@ goto :DONE
 :: =============================================
 :DONE
 
-:: Takaritas
-del /q "%TEMP%\bf_*.txt" >nul 2>&1
+del /q "%TMP_DIR%\bf_*.txt" >nul 2>&1
 del /q "%DPSCRIPT%" >nul 2>&1
 
 echo.
