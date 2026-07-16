@@ -60,6 +60,9 @@ if %DCOUNT%==0 (
 rem --- Lemez modellek (wmic, opcionalis) ---
 for /L %%i in (1,1,%DCOUNT%) do call :GetModel %%i
 
+rem --- GPT/MBR meghatarozas (uniqueid disk - lokalizacio-fuggetlen) ---
+for /L %%i in (1,1,%DCOUNT%) do call :DetectGPT %%i
+
 rem --- Windows telepitesek keresese (X: kihagyva, az a WinPE) ---
 for %%D in (C D E F G H I J K L M N O P Q R S T U V W Y Z) do call :CheckWin %%D
 
@@ -124,6 +127,7 @@ if /i not "%CONF%"=="i" (
 echo.
 
 set "WINDIRP=%SELWIN%:\Windows"
+set "ERRFLAG="
 
 if "%SELGPT%"=="1" goto FIXUEFI
 goto FIXLEGACY
@@ -133,8 +137,9 @@ rem   UEFI JAVITAS
 rem =====================================================
 :FIXUEFI
 echo   [1/4] EFI particio mountolasa...
+if "%SELEFI%"=="0" call :CreateEFI
 if "%SELEFI%"=="0" (
-    echo   [HIBA] Nem talalhato EFI particio ezen a lemezen.
+    echo   [HIBA] Nem talalhato es nem sikerult letrehozni EFI particiot.
     pause
     goto END
 )
@@ -165,6 +170,7 @@ bcdboot %WINDIRP% /s %EL%: /f UEFI /l hu-HU >nul 2>&1
 if errorlevel 1 bcdboot %WINDIRP% /s %EL%: /f UEFI >nul 2>&1
 if errorlevel 1 (
     echo   [FIGYELEM] BCDBoot hibat jelzett - ellenorizd kezzel.
+    set "ERRFLAG=1"
 ) else (
     echo   [OK] BCDBoot UEFI sikeres.
 )
@@ -192,6 +198,7 @@ rem   LEGACY (MBR) JAVITAS
 rem =====================================================
 :FIXLEGACY
 echo   [1/4] Aktiv particio beallitasa...
+call :FindWinPart
 >"%DPS%" (
     echo select disk %SELNUM%
     echo list partition
@@ -205,6 +212,8 @@ for /f "usebackq delims=" %%L in ("%DPO%") do (
 )
 if defined FIRSTPRIM set "FIRSTPART=%FIRSTPRIM%"
 if not defined FIRSTPART set "FIRSTPART=1"
+rem A Windowst tartalmazo particio elonyt elvez (elkeruli az adatparticiot)
+if defined WINPART set "FIRSTPART=%WINPART%"
 
 >"%DPS%" (
     echo select disk %SELNUM%
@@ -240,6 +249,7 @@ if defined MOUNTED (
     if errorlevel 1 bcdboot %WINDIRP% /s %TL%: /f BIOS >nul 2>&1
     if errorlevel 1 (
         echo   [FIGYELEM] BCDBoot hibat jelzett - ellenorizd kezzel.
+        set "ERRFLAG=1"
     ) else (
         echo   [OK] MBR ujrairva, BCDBoot BIOS sikeres.
     )
@@ -247,6 +257,7 @@ if defined MOUNTED (
     bootrec /fixmbr >nul 2>&1
     bootrec /fixboot >nul 2>&1
     bcdboot %WINDIRP% /f BIOS >nul 2>&1
+    if errorlevel 1 set "ERRFLAG=1"
     echo   [OK] BCDBoot fallback lefutott.
 )
 
@@ -274,10 +285,18 @@ rem   KESZ
 rem =====================================================
 :DONE
 echo.
-echo   =============================
-echo     BOOT JAVITAS KESZ.
-echo     Inditsd ujra a gepet.
-echo   =============================
+if defined ERRFLAG (
+    echo   =============================
+    echo     BEFEJEZVE - VOLT FIGYELMEZTETES.
+    echo     Ellenorizd a fenti uzeneteket,
+    echo     mielott ujrainditasz.
+    echo   =============================
+) else (
+    echo   =============================
+    echo     BOOT JAVITAS KESZ.
+    echo     Inditsd ujra a gepet.
+    echo   =============================
+)
 goto END
 
 :BADCHOICE
@@ -311,7 +330,7 @@ for /f "tokens=1-5" %%a in ("!LINE!") do (
 )
 echo !DN!|findstr /r "^[0-9][0-9]*$" >nul || goto :eof
 set "G=0"
-echo !LINE!|find "*" >nul && set "G=1"
+rem GPT/MBR kesobb, a :DetectGPT hatarozza meg (uniqueid disk)
 set /a DCOUNT+=1
 set "DNUM_%DCOUNT%=%DN%"
 set "DGPT_%DCOUNT%=%G%"
@@ -397,7 +416,83 @@ goto :eof
 :DelEntry
 if /i "%~1"=="{default}" goto :eof
 if defined DEFID if /i "%~1"=="%DEFID%" goto :eof
+rem WinRE / helyreallitasi (ramdisk) bejegyzest NEM torlunk
+set "ISRAM="
+for /f "usebackq tokens=1,*" %%x in (`bcdedit %SARG% /enum %1 2^>nul ^| findstr /i /c:"device"`) do (
+    echo %%y| find /i "ramdisk" >nul && set "ISRAM=1"
+)
+if defined ISRAM goto :eof
 bcdedit %SARG% /delete %1 /cleanup >nul 2>&1
+goto :eof
+
+:DetectGPT
+rem GPT vs MBR: uniqueid disk -> GPT = GUID (kotojeles), MBR = 8 jegyu hex.
+rem A GUID mintaja (-XXXX-) lokalizacio-fuggetlen, a gepnev kotojele nem zavarja.
+set "N=!DNUM_%1!"
+>"%DPS%" (
+    echo select disk %N%
+    echo uniqueid disk
+)
+diskpart /s "%DPS%" >"%DPO%" 2>nul
+findstr /r /c:"-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-" "%DPO%" >nul 2>&1 && set "DGPT_%1=1"
+goto :eof
+
+:CreateEFI
+rem Nincs EFI particio a GPT lemezen -> letrehozas a Windows kotet zsugoritasabol.
+echo.
+echo   [INFO] Ezen a lemezen nincs kulon EFI particio.
+echo   [INFO] Letrehozom: a Windows kotet (%SELWIN%:) zsugoritasa kb. 200 MB-tal,
+echo          majd egy uj 100 MB-os EFI particio (FAT32).
+echo   [INFO] A zsugoritas altalaban biztonsagos, de van hozza kockazat.
+set "CONF2="
+set /p "CONF2=  Folytatod az EFI particio letrehozasat? (i/n): "
+if /i not "%CONF2%"=="i" goto :eof
+>"%DPS%" (
+    echo select disk %SELNUM%
+    echo select volume %SELWIN%
+    echo shrink desired=200 minimum=120
+    echo create partition efi size=100
+    echo format quick fs=fat32 label=SYSTEM
+)
+diskpart /s "%DPS%" >"%DPO%" 2>nul
+call :Sleep 2
+call :FindEFISel
+if not "%SELEFI%"=="0" echo   [OK] EFI particio letrehozva (particio %SELEFI%).
+goto :eof
+
+:FindEFISel
+rem A kivalasztott lemezen megkeresi az EFI (System) particiot es beallitja SELEFI-t.
+>"%DPS%" (
+    echo select disk %SELNUM%
+    echo list partition
+)
+diskpart /s "%DPS%" >"%DPO%" 2>nul
+for /f "usebackq tokens=2" %%p in (`findstr /i /c:"System" /c:"Rendszer" "%DPO%"`) do (
+    echo %%p|findstr /r "^[0-9][0-9]*$" >nul && set "SELEFI=%%p"
+)
+goto :eof
+
+:FindWinPart
+rem Megkeresi, hogy a Windows melyik particion van (legacy: ez legyen az aktiv).
+set "WINPART="
+>"%DPS%" (
+    echo select volume %SELWIN%
+    echo detail partition
+)
+diskpart /s "%DPS%" >"%DPO%" 2>nul
+for /f "usebackq delims=" %%L in ("%DPO%") do (
+    set "PLINE=%%L"
+    call :GrabWinPart
+)
+goto :eof
+
+:GrabWinPart
+for /f "tokens=1-2" %%a in ("!PLINE!") do (
+    set "PW1=%%a"
+    if /i "!PW1:~0,4!"=="Part" (
+        echo %%b|findstr /r "^[0-9][0-9]*$" >nul && if not defined WINPART set "WINPART=%%b"
+    )
+)
 goto :eof
 
 :Sleep
