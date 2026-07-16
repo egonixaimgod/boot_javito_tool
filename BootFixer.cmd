@@ -14,15 +14,33 @@ if not exist "%TMPD%" set "TMPD=%~dp0"
 set "DPS=%TMPD%\bf_dp.txt"
 set "DPO=%TMPD%\bf_out.txt"
 
-rem --- Admin ellenorzes ---
+rem --- Admin ellenorzes + UAC onfelemeles ---
+rem WinPE alatt nincs UAC es minden eleve adminkent fut, de a fltmc ott
+rem hibazhat - a csak WinPE-ben letezo MiniNT kulcsbol ismerjuk fel es kihagyjuk.
+reg query HKLM\SYSTEM\CurrentControlSet\Control\MiniNT >nul 2>&1 && goto AdminOK
 fltmc >nul 2>&1
-if errorlevel 1 (
+if not errorlevel 1 goto AdminOK
+if /i "%~1"=="ELEV" (
     echo.
-    echo   [HIBA] Rendszergazdai jog szukseges. Inditsd adminkent.
+    echo   [HIBA] Rendszergazdai jog szukseges, de nem sikerult megszerezni.
     echo.
     pause
     exit /b 1
 )
+echo.
+echo   [INFO] Nincs rendszergazdai jog - ujrainditas emelt joggal...
+echo   [INFO] A felugro UAC ablakban valaszd az Igen gombot.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Start-Process -FilePath '%~f0' -ArgumentList 'ELEV' -Verb RunAs -ErrorAction Stop; exit 0 } catch { exit 1 }" >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo   [HIBA] Az emelt jogu inditas nem sikerult vagy el lett utasitva.
+    echo   Inditsd kezzel rendszergazdakent.
+    echo.
+    pause
+    exit /b 1
+)
+exit /b 0
+:AdminOK
 
 cls
 echo.
