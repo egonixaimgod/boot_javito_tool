@@ -2,8 +2,9 @@
 setlocal EnableExtensions EnableDelayedExpansion
 title BootFixer
 rem =====================================================
-rem   BOOTFIXER v5.0 - WinPE kompatibilis (Sergei Strelec)
+rem   BOOTFIXER v5.1 - WinPE kompatibilis (Sergei Strelec)
 rem   Nincs .NET fuggoseg - tiszta batch
+rem   Minden diskpart/bcdboot/bootsect hivas a log fajlba kerul.
 rem =====================================================
 
 rem --- Temp konyvtar ---
@@ -13,6 +14,12 @@ if not exist "%TMPD%" set "TMPD=%SystemRoot%\Temp"
 if not exist "%TMPD%" set "TMPD=%~dp0"
 set "DPS=%TMPD%\bf_dp.txt"
 set "DPO=%TMPD%\bf_out.txt"
+
+rem --- Log fajl: eloszor a script mappaja (USB stick - ujrainditas utan is
+rem     megmarad), ha az nem irhato, akkor a temp konyvtar ---
+set "LOG=%~dp0bootfixer_log.txt"
+(type nul >>"%LOG%") 2>nul || set "LOG=%TMPD%\bootfixer_log.txt"
+>"%LOG%" echo ===== BootFixer v5.1 log - %DATE% %TIME% =====
 
 rem --- Admin ellenorzes + UAC onfelemeles ---
 rem WinPE alatt nincs UAC es minden eleve adminkent fut, de a fltmc ott
@@ -46,8 +53,10 @@ cls
 echo.
 echo   =============================
 echo        B O O T F I X E R
-echo        WinPE batch v5.0
+echo        WinPE batch v5.1
 echo   =============================
+echo.
+echo   Log: %LOG%
 echo.
 echo   Lemezek keresese...
 echo.
@@ -56,7 +65,7 @@ rem =====================================================
 rem   LEMEZEK FELDERITESE
 rem =====================================================
 >"%DPS%" echo list disk
-diskpart /s "%DPS%" >"%DPO%" 2>nul
+call :DPRun
 if not exist "%DPO%" goto DPFAIL
 findstr /r /c:"[0-9]" "%DPO%" >nul 2>&1 || goto DPFAIL
 
@@ -158,36 +167,72 @@ echo   [1/4] EFI particio mountolasa...
 if "%SELEFI%"=="0" call :CreateEFI
 if "%SELEFI%"=="0" (
     echo   [HIBA] Nem talalhato es nem sikerult letrehozni EFI particiot.
+    echo   Reszletes log: %LOG%
     pause
     goto END
 )
-set "EL="
-for %%L in (Z Y W V U T S R Q O) do if not defined EL if not exist %%L:\ set "EL=%%L"
-if not defined EL (
-    echo   [HIBA] Nincs szabad betujel.
+call :MountEFI
+if defined ELOK goto EFIMOK
+echo.
+echo   [FIGYELEM] Az EFI particio mountolasa nem sikerult. Diskpart uzenete:
+type "%TMPD%\bf_mount.txt" 2>nul
+echo.
+call :CheckEFIType
+if defined EFIOK goto EFIREFMT
+echo   [INFO] A korabban talalt EFI particio nem letezik vagy nem elerheto.
+set "SELEFI=0"
+call :CreateEFI
+if "%SELEFI%"=="0" (
+    echo   [HIBA] Nem sikerult EFI particiot letrehozni. Reszletes log: %LOG%
+    pause
+    goto END
+)
+call :MountEFI
+goto EFIMCHK
+
+:EFIREFMT
+echo   [INFO] Az EFI particio letezik es a tipusa rendben van, de nem mountolhato.
+echo   [INFO] Valoszinuleg serult vagy hianyzo rajta a fajlrendszer. Az ujraformazas
+echo          ezt megoldja - a boot fajlokat a kovetkezo lepes ugyis ujrairja.
+set "CONF3="
+set /p "CONF3=  Ujraformazzam az EFI particiot FAT32-re es probaljam ujra? (i/n): "
+if /i not "%CONF3%"=="i" (
+    echo   Megszakitva.
     pause
     goto END
 )
 >"%DPS%" (
     echo select disk %SELNUM%
     echo select partition %SELEFI%
-    echo assign letter=%EL%
+    echo format fs=fat32 label=SYSTEM quick
 )
-diskpart /s "%DPS%" >nul 2>&1
-call :Sleep 2
-if not exist %EL%:\ (
-    echo   [HIBA] EFI mount sikertelen.
+call :DPRun
+call :MountEFI
+
+:EFIMCHK
+if not defined ELOK (
+    echo   [HIBA] Az EFI particio mountolasa ismet nem sikerult. Diskpart uzenete:
+    type "%TMPD%\bf_mount.txt" 2>nul
+    echo   Reszletes log: %LOG%
     pause
     goto END
 )
+:EFIMOK
 echo   [OK] EFI mountolva: %EL%:\
 
 echo   [2/4] Boot fajlok ujrairasa...
 if exist "%EL%:\EFI\Microsoft\Boot" rmdir /s /q "%EL%:\EFI\Microsoft\Boot" 2>nul
-bcdboot %WINDIRP% /s %EL%: /f UEFI /l hu-HU >nul 2>&1
-if errorlevel 1 bcdboot %WINDIRP% /s %EL%: /f UEFI >nul 2>&1
-if errorlevel 1 (
-    echo   [FIGYELEM] BCDBoot hibat jelzett - ellenorizd kezzel.
+bcdboot %WINDIRP% /s %EL%: /f UEFI /l hu-HU >"%DPO%" 2>&1
+set "RC=%ERRORLEVEL%"
+call :LogDPO "bcdboot UEFI hu-HU"
+if not "%RC%"=="0" (
+    bcdboot %WINDIRP% /s %EL%: /f UEFI >"%DPO%" 2>&1
+    set "RC=!ERRORLEVEL!"
+    call :LogDPO "bcdboot UEFI fallback"
+)
+if not "%RC%"=="0" (
+    echo   [FIGYELEM] BCDBoot hibat jelzett - kimenete:
+    type "%DPO%"
     set "ERRFLAG=1"
 ) else (
     echo   [OK] BCDBoot UEFI sikeres.
@@ -207,7 +252,7 @@ echo   [4/4] EFI levalasztasa...
     echo select partition %SELEFI%
     echo remove letter=%EL%
 )
-diskpart /s "%DPS%" >nul 2>&1
+call :DPRun
 echo   [OK] Kesz.
 goto DONE
 
@@ -221,7 +266,7 @@ call :FindWinPart
     echo select disk %SELNUM%
     echo list partition
 )
-diskpart /s "%DPS%" >"%DPO%" 2>nul
+call :DPRun
 set "FIRSTPART="
 set "FIRSTPRIM="
 for /f "usebackq delims=" %%L in ("%DPO%") do (
@@ -238,7 +283,7 @@ if defined WINPART set "FIRSTPART=%WINPART%"
     echo select partition %FIRSTPART%
     echo active
 )
-diskpart /s "%DPS%" >nul 2>&1
+call :DPRun
 echo   [OK] Particio %FIRSTPART% aktivva teve.
 
 echo   [2/4] Boot particio mountolasa...
@@ -251,31 +296,46 @@ if defined TL (
         echo select partition %FIRSTPART%
         echo assign letter=%TL%
     )
-    diskpart /s "%DPS%" >nul 2>&1
+    call :DPRun
     call :Sleep 2
     if exist !TL!:\ set "MOUNTED=1"
 )
 
 echo   [3/4] MBR / bootszektor / BCDBoot...
 if defined MOUNTED (
-    bootsect /nt60 %TL%: /mbr >nul 2>&1
-    if errorlevel 1 (
-        bootrec /fixmbr >nul 2>&1
-        bootrec /fixboot >nul 2>&1
+    bootsect /nt60 %TL%: /mbr >"%DPO%" 2>&1
+    set "RC=!ERRORLEVEL!"
+    call :LogDPO "bootsect nt60"
+    if not "!RC!"=="0" (
+        bootrec /fixmbr >"%DPO%" 2>&1
+        call :LogDPO "bootrec fixmbr"
+        bootrec /fixboot >"%DPO%" 2>&1
+        call :LogDPO "bootrec fixboot"
     )
-    bcdboot %WINDIRP% /s %TL%: /f BIOS /l hu-HU >nul 2>&1
-    if errorlevel 1 bcdboot %WINDIRP% /s %TL%: /f BIOS >nul 2>&1
-    if errorlevel 1 (
-        echo   [FIGYELEM] BCDBoot hibat jelzett - ellenorizd kezzel.
+    bcdboot %WINDIRP% /s %TL%: /f BIOS /l hu-HU >"%DPO%" 2>&1
+    set "RC=!ERRORLEVEL!"
+    call :LogDPO "bcdboot BIOS hu-HU"
+    if not "!RC!"=="0" (
+        bcdboot %WINDIRP% /s %TL%: /f BIOS >"%DPO%" 2>&1
+        set "RC=!ERRORLEVEL!"
+        call :LogDPO "bcdboot BIOS fallback"
+    )
+    if not "!RC!"=="0" (
+        echo   [FIGYELEM] BCDBoot hibat jelzett - kimenete:
+        type "%DPO%"
         set "ERRFLAG=1"
     ) else (
         echo   [OK] MBR ujrairva, BCDBoot BIOS sikeres.
     )
 ) else (
-    bootrec /fixmbr >nul 2>&1
-    bootrec /fixboot >nul 2>&1
-    bcdboot %WINDIRP% /f BIOS >nul 2>&1
-    if errorlevel 1 set "ERRFLAG=1"
+    bootrec /fixmbr >"%DPO%" 2>&1
+    call :LogDPO "bootrec fixmbr"
+    bootrec /fixboot >"%DPO%" 2>&1
+    call :LogDPO "bootrec fixboot"
+    bcdboot %WINDIRP% /f BIOS >"%DPO%" 2>&1
+    set "RC=!ERRORLEVEL!"
+    call :LogDPO "bcdboot BIOS nomount"
+    if not "!RC!"=="0" set "ERRFLAG=1"
     echo   [OK] BCDBoot fallback lefutott.
 )
 
@@ -292,7 +352,7 @@ if defined MOUNTED (
         echo select partition %FIRSTPART%
         echo remove letter=%TL%
     )
-    diskpart /s "%DPS%" >nul 2>&1
+    call :DPRun
 ) else (
     echo   [FIGYELEM] Nem sikerult mountolni - single boot kihagyva.
 )
@@ -315,6 +375,8 @@ if defined ERRFLAG (
     echo     Inditsd ujra a gepet.
     echo   =============================
 )
+echo.
+echo   Reszletes log: %LOG%
 goto END
 
 :BADCHOICE
@@ -323,13 +385,17 @@ pause
 goto END
 
 :DPFAIL
-echo   [HIBA] Diskpart nem erheto el.
+echo   [HIBA] Diskpart nem erheto el vagy nem adott ertelmes kimenetet.
+if exist "%DPO%" type "%DPO%"
+echo   Reszletes log: %LOG%
 pause
 goto END
 
 :END
 del "%DPS%" >nul 2>&1
 del "%DPO%" >nul 2>&1
+del "%TMPD%\bf_mount.txt" >nul 2>&1
+del "%TMPD%\bf_create.txt" >nul 2>&1
 echo.
 pause
 exit /b 0
@@ -337,6 +403,67 @@ exit /b 0
 rem =====================================================
 rem   SZUBRUTINOK
 rem =====================================================
+
+:DPRun
+rem diskpart futtatasa a %DPS% szkripttel; kimenet a %DPO%-ba es a logba.
+>>"%LOG%" echo.
+>>"%LOG%" echo ===== diskpart =====
+type "%DPS%" >>"%LOG%" 2>nul
+>>"%LOG%" echo ----- kimenet -----
+diskpart /s "%DPS%" >"%DPO%" 2>&1
+type "%DPO%" >>"%LOG%" 2>nul
+goto :eof
+
+:LogDPO
+rem A %DPO% tartalmat a logba fuzi %1 cimkevel (nem-diskpart eszkozokhoz).
+>>"%LOG%" echo.
+>>"%LOG%" echo ===== %~1 =====
+type "%DPO%" >>"%LOG%" 2>nul
+goto :eof
+
+:MountEFI
+rem A SELEFI particiot mountolja egy szabad betujelre. Siker: ELOK=1, EL=betu.
+rem Legfeljebb 3 betuvel probalkozik; sikertelen probalkozas utan takarit.
+rem Az assign kimenete a bf_mount.txt-be is kerul, hogy hibanal kiirhato legyen.
+set "ELOK="
+set "EL="
+set /a MTRY=0
+for %%L in (Z Y W V U T S R Q O) do if not defined ELOK if !MTRY! LSS 3 if not exist %%L:\ (
+    set /a MTRY+=1
+    >"%DPS%" (
+        echo select disk %SELNUM%
+        echo select partition %SELEFI%
+        echo assign letter=%%L
+    )
+    call :DPRun
+    copy /y "%DPO%" "%TMPD%\bf_mount.txt" >nul 2>&1
+    call :Sleep 2
+    if exist %%L:\ (
+        set "ELOK=1"
+        set "EL=%%L"
+    ) else (
+        >"%DPS%" (
+            echo select disk %SELNUM%
+            echo select partition %SELEFI%
+            echo remove letter=%%L
+        )
+        call :DPRun
+    )
+)
+goto :eof
+
+:CheckEFIType
+rem Letezik-e a SELEFI particio es tenyleg EFI System tipusu-e.
+rem A GPT tipus-GUID (c12a7328-...) lokalizacio-fuggetlen ismertetojel.
+set "EFIOK="
+>"%DPS%" (
+    echo select disk %SELNUM%
+    echo select partition %SELEFI%
+    echo detail partition
+)
+call :DPRun
+findstr /i /c:"c12a7328" "%DPO%" >nul 2>&1 && set "EFIOK=1"
+goto :eof
 
 :AddDisk
 rem !LINE! = pl. "  Disk 0    Online          931 GB      0 B         *"
@@ -375,7 +502,7 @@ if not defined HASWIN goto :eof
     echo select volume %WL%
     echo detail volume
 )
-diskpart /s "%DPS%" >"%DPO%" 2>nul
+call :DPRun
 set "WDN="
 for /f "usebackq tokens=1-3" %%a in (`findstr /r /c:"Disk [0-9]" /c:"Lemez [0-9]" "%DPO%" ^| findstr /v /c:"###"`) do (
     if /i "%%a"=="Disk" set "WDN=%%b"
@@ -395,7 +522,7 @@ if not "!DGPT_%1!"=="1" goto :eof
     echo select disk !DNUM_%1!
     echo list partition
 )
-diskpart /s "%DPS%" >"%DPO%" 2>nul
+call :DPRun
 for /f "usebackq tokens=2" %%p in (`findstr /i /c:"System" /c:"Rendszer" "%DPO%"`) do (
     echo %%p|findstr /r "^[0-9][0-9]*$" >nul && set "DEFI_%1=%%p"
 )
@@ -440,6 +567,7 @@ for /f "usebackq tokens=1,*" %%x in (`bcdedit %SARG% /enum %1 2^>nul ^| findstr 
     echo %%y| find /i "ramdisk" >nul && set "ISRAM=1"
 )
 if defined ISRAM goto :eof
+>>"%LOG%" echo bcdedit delete: %1
 bcdedit %SARG% /delete %1 /cleanup >nul 2>&1
 goto :eof
 
@@ -451,14 +579,14 @@ set "N=!DNUM_%1!"
     echo select disk %N%
     echo uniqueid disk
 )
-diskpart /s "%DPS%" >"%DPO%" 2>nul
+call :DPRun
 findstr /r /c:"-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-" "%DPO%" >nul 2>&1 && set "DGPT_%1=1"
 goto :eof
 
 :CreateEFI
 rem Nincs EFI particio a GPT lemezen -> letrehozas a Windows kotet zsugoritasabol.
 echo.
-echo   [INFO] Ezen a lemezen nincs kulon EFI particio.
+echo   [INFO] Ezen a lemezen nincs hasznalhato EFI particio.
 echo   [INFO] Letrehozom: a Windows kotet (%SELWIN%:) zsugoritasa kb. 200 MB-tal,
 echo          majd egy uj 100 MB-os EFI particio (FAT32).
 echo   [INFO] A zsugoritas altalaban biztonsagos, de van hozza kockazat.
@@ -470,12 +598,18 @@ if /i not "%CONF2%"=="i" goto :eof
     echo select volume %SELWIN%
     echo shrink desired=200 minimum=120
     echo create partition efi size=100
-    echo format quick fs=fat32 label=SYSTEM
+    echo format fs=fat32 label=SYSTEM quick
 )
-diskpart /s "%DPS%" >"%DPO%" 2>nul
+call :DPRun
+copy /y "%DPO%" "%TMPD%\bf_create.txt" >nul 2>&1
 call :Sleep 2
 call :FindEFISel
-if not "%SELEFI%"=="0" echo   [OK] EFI particio letrehozva (particio %SELEFI%).
+if not "%SELEFI%"=="0" (
+    echo   [OK] EFI particio letrehozva - particio: %SELEFI%
+) else (
+    echo   [HIBA] Az EFI particio letrehozasa nem sikerult. Diskpart kimenete:
+    type "%TMPD%\bf_create.txt" 2>nul
+)
 goto :eof
 
 :FindEFISel
@@ -484,7 +618,7 @@ rem A kivalasztott lemezen megkeresi az EFI (System) particiot es beallitja SELE
     echo select disk %SELNUM%
     echo list partition
 )
-diskpart /s "%DPS%" >"%DPO%" 2>nul
+call :DPRun
 for /f "usebackq tokens=2" %%p in (`findstr /i /c:"System" /c:"Rendszer" "%DPO%"`) do (
     echo %%p|findstr /r "^[0-9][0-9]*$" >nul && set "SELEFI=%%p"
 )
@@ -497,7 +631,7 @@ set "WINPART="
     echo select volume %SELWIN%
     echo detail partition
 )
-diskpart /s "%DPS%" >"%DPO%" 2>nul
+call :DPRun
 for /f "usebackq delims=" %%L in ("%DPO%") do (
     set "PLINE=%%L"
     call :GrabWinPart
