@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 title BootFixer
 rem =====================================================
-rem   BOOTFIXER v3 - UJ boot particio letrehozasa
+rem   BOOTFIXER v4 - UJ boot particio letrehozasa
 rem
 rem   1. lemez kivalasztasa (azon a lemezen kell lennie a Windowsnak)
 rem   2. boot mod: UEFI vagy Legacy BIOS / MBR
@@ -42,7 +42,7 @@ rem --- Log fajl: eloszor a script mappaja (USB stick - ujrainditas utan is
 rem     megmarad), ha az nem irhato, akkor a temp konyvtar ---
 set "LOG=%~dp0bootfixer_log.txt"
 (type nul >>"%LOG%") 2>nul || set "LOG=%TMPD%\bootfixer_log.txt"
->"%LOG%" echo ===== BootFixer v3 log - %DATE% %TIME% =====
+>"%LOG%" echo ===== BootFixer v4 log - %DATE% %TIME% =====
 
 rem --- Admin ellenorzes + UAC onfelemeles ---
 rem WinPE alatt nincs UAC es minden eleve adminkent fut, de a fltmc ott
@@ -95,7 +95,7 @@ cls
 echo.
 echo   =============================
 echo        B O O T F I X E R
-echo        v3 - uj boot particio
+echo        v4 - uj boot particio
 echo   =============================
 echo.
 echo   Log: %LOG%
@@ -173,6 +173,18 @@ if "%WCNT%"=="0" (
     goto PICKDISK
 )
 
+rem Teljes Windowsban a futo rendszer sajat lemezet nem javitjuk: annak mar
+rem van mukodo bootja, es az o boot-beallitasait irnank at futas kozben.
+set "RUNDISK="
+if not defined ISPE for %%w in (%WLIST%) do if /i "%%w"=="%SystemDrive%" set "RUNDISK=1"
+if defined RUNDISK (
+    echo.
+    echo   [HIBA] Ezen a lemezen fut a mostani Windows - azt innen nem javitom.
+    echo          Valaszd a javitando lemezt, vagy inditsd a gepet WinPE-rol.
+    echo.
+    goto PICKDISK
+)
+
 set "SELWIN="
 if "%WCNT%"=="1" (
     for %%w in (%WLIST%) do set "SELWIN=%%w"
@@ -211,6 +223,18 @@ set "SETID="
 set /a SHR=SIZE+16
 set "MODE=UEFI"
 set "PTYPE=efi"
+rem UEFI modban a bcdboot a FUTO gep firmware "Windows Boot Manager"
+rem bejegyzeset is atirja az uj particiora (nincs kapcsolo, ami kihagyna).
+rem Egy masik Windowsbol, USB-adapteren at ez a gazdagep sajat bejegyzeset
+rem iranyitana a kidughato lemezre - ezert UEFI csak WinPE-bol.
+if not defined ISPE (
+    echo.
+    echo   [HIBA] UEFI boot particiot ez a script csak WinPE-bol ir.
+    echo          UEFI modban a bcdboot annak a gepnek a firmware boot-bejegyzeset irja at,
+    echo          amelyiken fut - egy masik Windowsbol a sajat bejegyzeset iranyitana erre a lemezre.
+    echo          Tedd a lemezt abba a gepbe, amelyikbol bootolni fog, es inditsd Strelec WinPE-rol.
+    goto ASKMODE
+)
 if "%SELGPT%"=="1" goto CONFIRM
 rem MBR lemez + UEFI: eloszor GPT-re alakitas (ez a tiszta megoldas).
 echo.
@@ -710,7 +734,9 @@ if errorlevel 1 (
         echo          Futtasd ezt WinPE-bol, vagy utana: bootrec /fixmbr
         set "BOOTERR=1"
     ) else (
-        echo   [INFO] bootsect nem elerheto - az MBR boot kod nem lett ujrairva.
+        echo   [FIGYELEM] bootsect nem elerheto - az MBR boot kod nem lett ujrairva.
+        echo              Ha a gep Legacy modban nem indul errol a lemezrol, futtasd ujra
+        echo              ezt a scriptet WinPE-bol - ott van bootsect, es azt is megirja.
     )
     >>"%LOG%" echo bootsect nem elerheto - kihagyva
     goto :eof
