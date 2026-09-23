@@ -16,6 +16,15 @@ There is no build step, no tests, no dependencies. The `.cmd` file is the entire
 - `diskpart` output parsing must accept both English and Hungarian tokens (`Disk`/`Lemez`, `Partition`/`Partíció` matched via `Part` prefix, `System`/`Rendszer`), and must filter header lines (they contain `###`).
 - **GPT vs MBR is detected from `uniqueid disk`, not from the `*` in `list disk`.** GPT prints a GUID (`Disk ID: {…-XXXX-…}`), MBR an 8-hex signature. The old `find "*"` on the `list disk` line was wrong: both the `Gpt` and `Dyn` columns render `*`, so a dynamic MBR disk got misclassified as GPT. The GUID test uses regex `-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-`, which is locale-independent and immune to a hyphen in the machine name (only one dash).
 
+## v8 (2026-09-23): NO unallocated gap may remain (explicit user decision: "ne maradjon semmi fekete blokk")
+
+`:MakeBootPart` places the new boot partition so that nothing is left over, without ever moving Windows:
+- **A) leading gap** (free space before the first partition, measured from `list partition`'s Offset column in `:PartLine` -> `MINOFF`): if it is between `MINSZ` (100 MB; UEFI on 4K-sector disks 260 MB) and 1024 MB, the partition is created with `offset=1024` (KB) and NO size, so it fills exactly up to the next partition (a 261 MB ESP is as valid as a 100 MB one).
+- **B) otherwise, behind Windows**: `extend` Windows into everything directly after it, then `shrink` it by exactly SIZE, then create SIZE — the new partition fills the freed space with no gap.
+- **MBR + UEFI**: mbr2gpt puts its ESP right AFTER Windows (see v7), which would leave a gap once the temporary Legacy partition is gone. So after a successful conversion the script runs a **second pass through the already-tested GPT-UEFI path** (`PASS2`): delete mbr2gpt's ESP + the temporary Legacy partition, `:MakeBootPart` (the leading gap freed by the Legacy partition gets the ESP), bcdboot UEFI, then `:ExtendWin` absorbs everything behind Windows. If pass 2 fails, `:FAIL` says the disk is already GPT and to rerun in UEFI mode. `:CleanupPrep`/`ONLYLEGACY` from v7 are removed (superseded).
+- Remaining gaps are only possible when the leading gap is < MINSZ or > 1 GB, or between other partitions; `:DiskFree` reports them.
+- **Simulator v2 is geometry-aware** (offset+size per partition, free extents, `create ... offset=`, `extend` into the adjacent extent, mbr2gpt shrinks OS and appends the ESP after it). 7 scenarios, gap check on the final layout: user's original MBR disk -> UEFI, user's CURRENT disk (after the v6 run) -> UEFI, typical GPT, MBR with a data-bearing System Reserved, clean MBR System Reserved -> Legacy: **0 gaps in all five**; mbr2gpt refusal and GPT+Legacy refusal behave correctly.
+
 ## v7 (2026-09-23): cleanup of the temporary Legacy partition + free-space handling
 
 First real v6 run (the USB SSD, MBR -> UEFI, log in the DriverVarazslo repo's user's D:\) succeeded, and showed two things:

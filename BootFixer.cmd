@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 title BootFixer
 rem =====================================================
-rem   BOOTFIXER v7 - a boot particio ujrairasa
+rem   BOOTFIXER v8 - a boot particio ujrairasa
 rem
 rem   1. lemez kivalasztasa (azon a lemezen kell lennie a Windowsnak)
 rem   2. boot mod: UEFI (GPT lemez) vagy Legacy BIOS (MBR lemez) -
@@ -36,7 +36,7 @@ set "DRV=%TMPD%\bf_drv.txt"
 rem --- Log fajl: eloszor a script mappaja, ha az nem irhato, a temp ---
 set "LOG=%~dp0bootfixer_log.txt"
 (type nul >>"%LOG%") 2>nul || set "LOG=%TMPD%\bootfixer_log.txt"
->"%LOG%" echo ===== BootFixer v7 log - %DATE% %TIME% =====
+>"%LOG%" echo ===== BootFixer v8 log - %DATE% %TIME% =====
 
 rem --- Admin ellenorzes + UAC onfelemeles ---
 rem WinPE alatt nincs UAC es minden eleve adminkent fut, de a fltmc ott
@@ -87,7 +87,7 @@ cls
 echo.
 echo   =============================
 echo        B O O T F I X E R
-echo        v7 - boot particio
+echo        v8 - boot particio
 echo   =============================
 echo.
 echo   Log: %LOG%
@@ -215,7 +215,9 @@ if "%SELGPT%"=="1" (
     set "FS=fat32"
     set "ACTIVE="
     set "SIZE=300"
+    set "MINSZ=260"
     if "!SELBPS!"=="512" set "SIZE=100"
+    if "!SELBPS!"=="512" set "MINSZ=100"
     set "MODE=UEFI - GPT lemez"
     goto PLAN
 )
@@ -234,6 +236,7 @@ set "PTYPE=primary"
 set "FS=ntfs"
 set "ACTIVE=1"
 set "SIZE=300"
+set "MINSZ=100"
 set "MODE=UEFI - GPT, a lemez atalakitasa a Microsoft mbr2gpt eszkozevel"
 goto PLAN
 
@@ -252,6 +255,7 @@ set "PTYPE=primary"
 set "FS=ntfs"
 set "ACTIVE=1"
 set "SIZE=500"
+set "MINSZ=100"
 set "MODE=Legacy BIOS - MBR lemez"
 goto PLAN
 
@@ -291,14 +295,17 @@ if defined KEPTLIST (
     echo        NEM torlom, mert mas fajlok is vannak rajta:
     for %%p in (%KEPTLIST%) do echo          - !KEPTDESC_%%p!
 )
-echo     2. Uj %SIZE% MB-os boot particio, %FS% fajlrendszerrel.
-echo        Ha nincs eleg szabad hely, a %SELWIN%: kotetet zsugoritom %SHR% MB-tal.
+echo     2. Uj boot particio, %FS% fajlrendszerrel - ures resz nem marad:
+echo        ha a lemez elejen van szabad hely, azt tolti ki, kulonben
+echo        %SIZE% MB-ot kap kozvetlenul a Windows mogott.
 echo     3. Boot fajlok irasa a %SELWIN%:\Windows-bol, single boot.
 if defined VIAM2G (
     echo     4. A lemez atalakitasa GPT-re a Microsoft mbr2gpt eszkozevel.
     echo        Elobb csak ellenoriz - ha nem engedi, megallok, es a lemez
-    echo        akkor Legacy BIOS modban indul.
+    echo        akkor Legacy BIOS modban indul. Utana az ideiglenes Legacy
+    echo        particiot torlom, es az EFI particiot a vegleges helyere irom.
 )
+echo     A Windows a vegen atveszi a kozvetlenul mogotte levo szabad helyet.
 echo   A Windows particiohoz nem nyulok.
 echo.
 set "CONF="
@@ -310,13 +317,14 @@ if /i not "!CONF!"=="i" (
 >>"%LOG%" echo.
 >>"%LOG%" echo ===== VALASZTAS: lemez=%SELNUM% [!SELMOD!] %PSTYLE%, Windows=%SELWIN%: particio %WINPART%, mod=%MODE%, torles=[%DELLIST%], uj=%PTYPE% %SIZE% MB %FS% =====
 set "CHANGED="
+set "PASS2="
 
 rem =====================================================
 rem   4. REGI BOOT PARTICIOK TORLESE
 rem =====================================================
 if defined DELLIST (
     echo.
-    echo   [1/4] Regi boot particiok torlese...
+    echo   Regi boot particiok torlese...
     call :DeleteBootParts
 )
 if defined DELFAIL goto FAIL
@@ -324,49 +332,13 @@ if defined DELFAIL goto FAIL
 rem =====================================================
 rem   5. UJ BOOT PARTICIO
 rem =====================================================
+:BUILD
 echo.
-echo   [2/4] Uj boot particio letrehozasa...
-call :FreeLetter
-if not defined BL (
-    echo   [HIBA] Nincs szabad meghajtobetu a particiohoz.
-    goto FAIL
-)
->>"%LOG%" echo Ideiglenes betu az uj particiohoz: %BL%:
-
-call :ListParts
-set "PCB=%PCOUNT%"
-call :CreatePart
-if exist %BL%:\ goto PARTOK
-call :ListParts
-if not "%PCOUNT%"=="%PCB%" goto PARTHALF
-
-rem Nem jott letre semmi - nincs eleg szabad hely. Zsugoritas, majd ujra.
-echo   [INFO] Nincs eleg szabad hely a lemezen - a %SELWIN%: kotet zsugoritasa %SHR% MB-tal...
->"%DPS%" (
-    echo select volume %SELWIN%
-    echo shrink desired=%SHR% minimum=%SHR%
-)
-call :DPRun
-if not "%DPRC%"=="0" (
-    echo   [HIBA] A %SELWIN%: kotet zsugoritasa nem sikerult. Diskpart uzenete:
-    type "%DPO%"
-    echo.
-    echo   Tipp: BitLockeres kotetnel kapcsold ki a BitLockert, kulonben futtass
-    echo   chkdsk %SELWIN%: /f parancsot, es probald ujra.
-    goto FAIL
-)
-set "CHANGED=1"
-echo   [OK] Zsugoritva.
-call :CreatePart
-if exist %BL%:\ goto PARTOK
-call :ListParts
-if not "%PCOUNT%"=="%PCB%" goto PARTHALF
-echo   [HIBA] Az uj particio letrehozasa nem sikerult. Diskpart uzenete:
-type "%DPO%"
-echo.
-echo   A zsugoritas utan kb. %SHR% MB szabad hely maradt a lemezen - ez artalmatlan.
-if "%SELGPT%"=="0" echo   MBR lemezen legfeljebb 4 primary particio lehet - lehet, hogy mar nincs tobb hely.
-goto FAIL
+echo   Uj boot particio letrehozasa...
+call :MakeBootPart
+if defined MKHALF goto PARTHALF
+if defined MKFAIL goto FAIL
+goto PARTOK
 
 :PARTHALF
 set "CHANGED=1"
@@ -388,7 +360,7 @@ if defined NEWPART (
 rem =====================================================
 rem   6. BOOT FAJLOK
 rem =====================================================
-echo   [3/4] Boot fajlok irasa...
+echo   Boot fajlok irasa...
 set "BOOTERR="
 set "NOBOOTSECT="
 if "%BCDFW%"=="BIOS" call :WriteMbr
@@ -433,7 +405,38 @@ rem =====================================================
 rem   7. MBR lemez + UEFI: atalakitas GPT-re (mbr2gpt)
 rem =====================================================
 set "M2GFAIL="
-if defined VIAM2G call :DoM2G
+if not defined VIAM2G goto FINISH
+call :DoM2G
+if defined M2GFAIL goto FINISH
+rem Sikeres atalakitas: az mbr2gpt a Windows MOGE tette az EFI particiot, az
+rem ideiglenes Legacy particio pedig feleslegesen ott maradt (terepen merve).
+rem Masodik kor, a mar tesztelt GPT-UEFI uton: mindkettot toroljuk, es az EFI
+rem particio a vegleges helyere kerul - igy nem marad ures resz.
+set "VIAM2G="
+set "PASS2=1"
+set "SELGPT=1"
+set "PSTYLE=GPT"
+set "BCDFW=UEFI"
+set "PTYPE=efi"
+set "FS=fat32"
+set "ACTIVE="
+set "SIZE=300"
+set "MINSZ=260"
+if "%SELBPS%"=="512" set "SIZE=100"
+if "%SELBPS%"=="512" set "MINSZ=100"
+echo.
+echo   Az EFI particio vegleges helyre irasa...
+call :FindWinPart
+if not defined WINPART (
+    echo   [FIGYELEM] A Windows particio nem azonosithato - az mbr2gpt EFI particioja marad.
+    goto FINISH
+)
+call :FindBootParts
+if defined DELLIST call :DeleteBootParts
+if defined DELFAIL goto FAIL
+goto BUILD
+
+:FINISH
 call :ExtendWin
 call :DiskFree
 goto DONE
@@ -509,6 +512,10 @@ if defined CHANGED (
     echo     A lemezen nem valtozott semmi.
 )
 echo   ===================================================
+if defined PASS2 (
+    echo   A lemez mar GPT. Futtasd ujra ezt a scriptet, UEFI-t valasztva -
+    echo   az ujra megirja az EFI particiot.
+)
 echo   Reszletes log: %LOG%
 goto END
 
@@ -724,13 +731,6 @@ if not "%DPRC%"=="0" (
 )
 findstr /i /c:"c12a7328" "%DPO%" >nul 2>&1 && set "ISB=1" && set "WHY=EFI rendszerparticio"
 findstr /i /r /c:": *ef *$" "%DPO%" >nul 2>&1 && set "ISB=1" && set "WHY=EFI tipusu particio"
-rem Az mbr2gpt utani takaritasnal csak a Legacy boot particio torolheto -
-rem az EFI particio az, amit az mbr2gpt az imen hozott letre.
-if defined ONLYLEGACY if defined ISB (
-    >>"%LOG%" echo Particio %1: EFI particio az atalakitas utan - marad.
-    set "ISB="
-    goto ClassifyEnd
-)
 rem Meglevo betujel a kotet-sorbol: "* Volume 3   E   SYSTEM   FAT32 ..."
 set "EXL="
 for /f "usebackq tokens=1-4" %%a in ("%DPO%") do if "%%a"=="*" call :VolLetter "%%c" "%%d"
@@ -876,21 +876,27 @@ rem Lokalizacio-fuggetlen: "Partition N" es "Particio N" is "Part"-tal kezdodik.
 call :DPRun
 set /a PCOUNT=0
 set "PNUMS="
-for /f "usebackq tokens=1-6" %%a in ("%DPO%") do call :PartLine "%%a" "%%b" "%%c" "%%d" "%%e" "%%f"
->>"%LOG%" echo Particiok a %SELNUM%. lemezen: [%PNUMS%] - %PCOUNT% db
+set /a MINOFF=2000000000
+for /f "usebackq tokens=1-8" %%a in ("%DPO%") do call :PartLine "%%a" "%%b" "%%c" "%%d" "%%e" "%%f" "%%g" "%%h"
+>>"%LOG%" echo Particiok a %SELNUM%. lemezen: [%PNUMS%] - %PCOUNT% db, az elso kezdete: %MINOFF% MB
 goto :eof
 
 :PartLine
 rem "  Partition 2    System   100 MB  1024 KB"  vagy csillaggal az elejen.
+rem Tokenek: Part N Tipus Meret Egyseg Kezdet Egyseg.
 set "L1=%~1"
 set "L2=%~2"
 set "L4=%~4"
 set "L5=%~5"
+set "L6=%~6"
+set "L7=%~7"
 if "!L1!"=="*" (
     set "L1=%~2"
     set "L2=%~3"
     set "L4=%~5"
     set "L5=%~6"
+    set "L6=%~7"
+    set "L7=%~8"
 )
 if /i not "!L1:~0,4!"=="Part" goto :eof
 call :IsNum L2
@@ -899,6 +905,16 @@ set /a PCOUNT+=1
 set "PNUMS=!PNUMS! !L2!"
 set "PSIZE_!L2!=!L4!"
 set "PUNIT_!L2!=!L5!"
+rem Kezdet MB-ban (a lemez eleji ures resz meresehez)
+set "OFFMB="
+call :IsNum L6
+if defined ISNUM (
+    if /i "!L7!"=="KB" set /a OFFMB=L6/1024
+    if /i "!L7!"=="MB" set /a OFFMB=L6
+    if /i "!L7!"=="GB" set /a OFFMB=L6*1024
+    if /i "!L7!"=="TB" set /a OFFMB=L6*1048576
+)
+if defined OFFMB if !OFFMB! LSS !MINOFF! set /a MINOFF=OFFMB
 goto :eof
 
 :CreatePart
@@ -908,10 +924,15 @@ rem csillaggal jeloli a fokuszban levot = az imen letrehozott particiot.
 rem Ha a create elbukik, a diskpart ott megall, es semmi nem valtozik.
 rem Cimke: NTFS-en "System Reserved" (mint a Windows telepitonel), az EFI
 rem particio cimke nelkul.
+rem CRSIZE = meret MB-ban (ures: kitolti a reszt), CROFF = kezdet KB-ban (ures:
+rem az elso eleg nagy szabad resz).
 set "NEWPART="
+set "CRCMD=create partition %PTYPE%"
+if defined CRSIZE set "CRCMD=!CRCMD! size=!CRSIZE!"
+if defined CROFF set "CRCMD=!CRCMD! offset=!CROFF!"
 >"%DPS%" (
     echo select disk %SELNUM%
-    echo create partition %PTYPE% size=%SIZE%
+    echo !CRCMD!
     if "%FS%"=="ntfs" (echo format quick fs=ntfs label="System Reserved") else (echo format quick fs=%FS%)
     echo assign letter=%BL%
     if defined ACTIVE echo active
@@ -1036,7 +1057,6 @@ if "%RC%"=="0" if defined GPTNOW (
     echo   [OK] A lemez most GPT, a UEFI boot kesz.
     set "BCDFW=UEFI"
     set "PSTYLE=GPT"
-    call :CleanupPrep
     goto :eof
 )
 echo   [HIBA] Az atalakitas nem sikerult - mbr2gpt kod: %RC%, GPT: %GPTNOW%. Reszletek a logban.
@@ -1044,39 +1064,89 @@ call :M2GErrLog
 set "M2GFAIL=1"
 goto :eof
 
-:CleanupPrep
-rem Sikeres mbr2gpt utan az ideiglenes Legacy boot particiora nincs szukseg:
-rem az mbr2gpt sajat EFI particiot hozott letre (terepen merve: a Windows
-rem kotet zsugoritasaval, nem a mienk ujrahasznositasaval). Ugyanaz a
-rem felmeres, mint az elejen, de az EFI particio kimarad (ONLYLEGACY).
-echo   Az ideiglenes Legacy boot particio eltavolitasa...
-call :FindWinPart
-if not defined WINPART (
-    echo   [FIGYELEM] A Windows particio nem azonosithato - az ideiglenes particio marad.
+:MakeBootPart
+rem Uj boot particio ugy, hogy NE maradjon ures resz (explicit user decision):
+rem  A) ha a lemez elejen MINSZ..1024 MB szabad hely van, a particio pontosan
+rem     azt tolti ki (offset=1024 KB, meret nelkul = a kovetkezo particioig);
+rem  B) kulonben a Windows mogott: a Windows elobb atveszi a mogotte levo
+rem     szabad helyet, aztan pontosan SIZE MB-tal zsugorodik, es az uj particio
+rem     ezt a helyet tolti ki.
+rem MKFAIL = nem sikerult, MKHALF = letrejott, de formazas/betu nem.
+set "MKFAIL="
+set "MKHALF="
+call :FreeLetter
+if not defined BL (
+    echo   [HIBA] Nincs szabad meghajtobetu a particiohoz.
+    set "MKFAIL=1"
     goto :eof
 )
-set "ONLYLEGACY=1"
-call :FindBootParts
-set "ONLYLEGACY="
-if not defined DELLIST (
-    echo   [INFO] Nincs eltavolitando ideiglenes particio.
+>>"%LOG%" echo Ideiglenes betu az uj particiohoz: %BL%:
+call :ListParts
+set "PCB=%PCOUNT%"
+set /a LEADMB=MINOFF-1
+>>"%LOG%" echo Szabad hely a lemez elejen: %LEADMB% MB - minimum %MINSZ% MB, maximum 1024 MB a kitolteshez
+if %LEADMB% GEQ %MINSZ% if %LEADMB% LEQ 1024 (
+    echo   [INFO] A lemez elejen %LEADMB% MB szabad hely van - a boot particio azt tolti ki.
+    set "CRSIZE="
+    set "CROFF=1024"
+    call :CreatePart
+    if exist %BL%:\ (
+        set "CHANGED=1"
+        goto :eof
+    )
+    call :ListParts
+    if not "!PCOUNT!"=="%PCB%" (
+        set "MKHALF=1"
+        goto :eof
+    )
+    echo   [INFO] Oda nem sikerult - a Windows moge teszem.
+    >>"%LOG%" echo A lemez eleji kitoltes nem sikerult - B valtozat.
+)
+rem B) Windows moge, hezag nelkul
+call :ExtendWin quiet
+>"%DPS%" (
+    echo select volume %SELWIN%
+    echo shrink desired=%SIZE% minimum=%SIZE%
+)
+call :DPRun
+if not "%DPRC%"=="0" (
+    echo   [HIBA] A %SELWIN%: kotet zsugoritasa nem sikerult. Diskpart uzenete:
+    type "%DPO%"
+    echo.
+    echo   Tipp: BitLockeres kotetnel kapcsold ki a BitLockert, kulonben futtass
+    echo   chkdsk %SELWIN%: /f parancsot, es probald ujra.
+    set "MKFAIL=1"
     goto :eof
 )
-call :DeleteBootParts
-if defined DELFAIL echo   [FIGYELEM] Az ideiglenes particio torlese nem sikerult - a bootot nem zavarja.
-set "DELFAIL="
+set "CHANGED=1"
+set "CRSIZE=%SIZE%"
+set "CROFF="
+call :CreatePart
+if exist %BL%:\ goto :eof
+call :ListParts
+if not "%PCOUNT%"=="%PCB%" (
+    set "MKHALF=1"
+    goto :eof
+)
+echo   [HIBA] Az uj particio letrehozasa nem sikerult. Diskpart uzenete:
+type "%DPO%"
+echo.
+echo   A Windows mogott %SIZE% MB szabad hely maradt - ha ujrafuttatod a scriptet, az kitolti.
+if "%SELGPT%"=="0" echo   MBR lemezen legfeljebb 4 primary particio lehet - lehet, hogy mar nincs tobb hely.
+set "MKFAIL=1"
 goto :eof
 
 :ExtendWin
 rem A Windows kotet atveszi a KOZVETLENUL mogotte levo szabad helyet.
 rem Ha nincs ilyen, a diskpart hibat ad - az nem hiba, csak naplozzuk.
+rem %1 = quiet: nem ir ki semmit (a boot particio elokeszitesekor).
 >"%DPS%" (
     echo select volume %SELWIN%
     echo extend
 )
 call :DPRun
 if "%DPRC%"=="0" (
-    echo   [OK] A Windows kotet atvette a mogotte levo szabad helyet.
+    if /i not "%~1"=="quiet" echo   [OK] A Windows kotet atvette a mogotte levo szabad helyet.
 ) else (
     >>"%LOG%" echo extend: a Windows mogott nincs kozvetlen szabad hely - nincs mit hozzaadni.
 )
