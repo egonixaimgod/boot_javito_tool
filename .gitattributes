@@ -1,0 +1,3 @@
+# A .cmd-t CRLF-fel, konverzio nelkul taroljuk: a raw.githubusercontent ezt a
+# blobot adja ki, es LF-es batch-et a cmd rosszul ertelmez.
+*.cmd -text
