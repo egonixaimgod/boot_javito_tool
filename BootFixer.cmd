@@ -2,30 +2,27 @@
 setlocal EnableExtensions EnableDelayedExpansion
 title BootFixer
 rem =====================================================
-rem   BOOTFIXER v5 - UJ boot particio letrehozasa
+rem   BOOTFIXER v6 - a boot particio ujrairasa
 rem
 rem   1. lemez kivalasztasa (azon a lemezen kell lennie a Windowsnak)
-rem   2. boot mod: UEFI vagy Legacy BIOS / MBR
-rem   3. a particios tablat NEM alakitja at (2026-09-23 ota KIKAPCSOLVA,
-rem      mert az elso eles futas tonkretett egy lemezt): UEFI + MBR lemez
-rem      eseten FAT32 boot particio ESP tipussal, Legacy + GPT lemez
-rem      eseten elutasitja. A beagyazott PowerShell resz a fajl vegen
-rem      marad, de a :ConvPlan nem engedi lefutni.
-rem   4. UJ boot particio a lemezen (a Windows kotet zsugoritasabol,
-rem      ha nincs szabad hely)
-rem   5. boot fajlok irasa az uj particiora (bcdboot)
+rem   2. boot mod: UEFI (GPT lemez) vagy Legacy BIOS (MBR lemez) -
+rem      UEFI + MBR vagy Legacy + GPT felemas megoldast NEM csinal
+rem   3. a lemez REGI boot particioinak torlese. Csak az torlodik, ami
+rem      EFI tipusu VAGY boot fajlok vannak rajta, ES 1 GB-nal kisebb, ES
+rem      nem a Windows particio. A megerosites tetelesen kiirja.
+rem   4. UJ boot particio + boot fajlok (bcdboot), single boot
+rem   5. UEFI + MBR lemez: elobb Legacy boot kerul ra, majd a Microsoft
+rem      sajat mbr2gpt eszkoze alakitja GPT-re (elotte /validate - csak
+rem      akkor alakit, ha o szerint biztonsagos). Legacy + GPT lemez: nincs
+rem      biztonsagos eszkoz GPT-bol MBR-be, ezert nem csinalja.
 rem
-rem   WinPE (pl. Sergei Strelec) es teljes Windows alatt is fut. A tabla
-rem   atalakitasahoz PowerShell kell (a fajl vegere agyazott resz), es a
-rem   futo Windows sajat lemezet nem lehet atalakitani - azt WinPE-bol.
-rem   Minden diskpart/bcdboot/bootsect/PowerShell lepes a logba kerul.
+rem   WinPE-bol es masik, bootolhato Windowsbol is fut (a javitando lemez
+rem   pl. USB-n csatlakoztatva). Minden lepes a logba kerul.
 rem
-rem   FIGYELEM a szerkesztesnel: a script delayed expansion-nel fut, ezert
-rem   a kiirt szovegekben NEM lehet felkialtojel, es a "->" jel sem, mert
-rem   a ">" atiranyitas.
+rem   Szerkesztesnel: delayed expansion miatt a kiirt szovegben NINCS
+rem   felkialtojel, es "->" sincs (a ">" atiranyitas). Tiszta batch,
+rem   CRLF sorvegek, csak ASCII.
 rem =====================================================
-
-set "BF_SELF=%~f0"
 
 rem --- Temp konyvtar ---
 set "TMPD=%TEMP%"
@@ -35,14 +32,11 @@ if not exist "%TMPD%" set "TMPD=%~dp0"
 set "DPS=%TMPD%\bf_dp.txt"
 set "DPO=%TMPD%\bf_out.txt"
 set "DRV=%TMPD%\bf_drv.txt"
-set "PS1=%TMPD%\bf_conv.ps1"
-set "CVO=%TMPD%\bf_conv_out.txt"
 
-rem --- Log fajl: eloszor a script mappaja (USB stick - ujrainditas utan is
-rem     megmarad), ha az nem irhato, akkor a temp konyvtar ---
+rem --- Log fajl: eloszor a script mappaja, ha az nem irhato, a temp ---
 set "LOG=%~dp0bootfixer_log.txt"
 (type nul >>"%LOG%") 2>nul || set "LOG=%TMPD%\bootfixer_log.txt"
->"%LOG%" echo ===== BootFixer v5 log - %DATE% %TIME% =====
+>"%LOG%" echo ===== BootFixer v6 log - %DATE% %TIME% =====
 
 rem --- Admin ellenorzes + UAC onfelemeles ---
 rem WinPE alatt nincs UAC es minden eleve adminkent fut, de a fltmc ott
@@ -75,8 +69,6 @@ exit /b 0
 :AdminOK
 
 rem --- Milyen modban indult a gep? Csak TIPP a valasztashoz. ---
-rem WinPE: PEFirmwareType (1=BIOS, 2=UEFI), a wpeutil tolti ki.
-rem Teljes Windows: a futo rendszer betoltoje winload.efi vagy winload.exe.
 if defined ISPE wpeutil UpdateBootInfo >nul 2>&1
 set "FWMODE="
 for /f "tokens=3" %%a in ('reg query HKLM\SYSTEM\CurrentControlSet\Control /v PEFirmwareType 2^>nul ^| find "0x"') do (
@@ -95,7 +87,7 @@ cls
 echo.
 echo   =============================
 echo        B O O T F I X E R
-echo        v5 - uj boot particio
+echo        v6 - boot particio
 echo   =============================
 echo.
 echo   Log: %LOG%
@@ -148,7 +140,7 @@ echo.
 echo   [0] Kilepes
 echo.
 set "CH="
-set /p "CH=  Melyik lemezre kerul az uj boot particio? [szam]: "
+set /p "CH=  Melyik lemez bootjat irjam ujra? [szam]: "
 if not defined CH goto END
 if "!CH!"=="0" goto END
 call :IsNum CH
@@ -160,6 +152,7 @@ set "SELNUM=!DNUM_%CH%!"
 set "SELGPT=!DGPT_%CH%!"
 set "SELMOD=!DMOD_%CH%!"
 set "SELSIZE=!DSIZE_%CH%!"
+set "SELBPS=!DBPS_%CH%!"
 set "WLIST=!DWIN_%CH%!"
 set "WCNT=!DWCNT_%CH%!"
 set "PSTYLE=MBR"
@@ -174,7 +167,8 @@ if "%WCNT%"=="0" (
 )
 
 rem Teljes Windowsban a futo rendszer sajat lemezet nem javitjuk: annak mar
-rem van mukodo bootja, es az o boot-beallitasait irnank at futas kozben.
+rem van mukodo bootja, es futas kozben irnank at. A csatlakoztatott masik
+rem lemezt (pl. USB-n) ez nem erinti.
 set "RUNDISK="
 if not defined ISPE for %%w in (%WLIST%) do if /i "%%w"=="%SystemDrive%" set "RUNDISK=1"
 if defined RUNDISK (
@@ -198,12 +192,10 @@ rem =====================================================
 rem   2. BOOT MOD KIVALASZTASA
 rem =====================================================
 :ASKMODE
-set "CONVERT="
-set "CV_DROP="
 echo.
 echo   Milyen boot legyen?
-echo     [1] UEFI
-echo     [2] Legacy BIOS / MBR
+echo     [1] UEFI         - GPT lemez
+echo     [2] Legacy BIOS  - MBR lemez
 if defined FWMODE echo   Tipp: ez a gep most %FWMODE% modban indult - altalaban ezt erdemes valasztani.
 echo     [0] Kilepes
 set "MD="
@@ -215,91 +207,99 @@ echo   Ervenytelen valasztas.
 goto ASKMODE
 
 :MODEUEFI
-set "BCDFW=UEFI"
-set "FS=fat32"
-set "SIZE=300"
-set "ACTIVE="
-set "SETID="
-set /a SHR=SIZE+16
-set "MODE=UEFI"
-set "PTYPE=efi"
-rem UEFI teljes Windowsbol is fut (explicit user decision, 2026-09-23 - a v4
-rem WinPE-zara visszavonva). A bcdboot ilyenkor a futo gep firmware boot-
-rem bejegyzeset is atirhatja - ezt a :DONE vegen figyelmeztetes mondja ki.
-if "%SELGPT%"=="1" goto CONFIRM
-rem MBR lemez + UEFI: eloszor GPT-re alakitas (ez a tiszta megoldas).
-echo.
-echo   Ez MBR lemez - UEFI-hez GPT a helyes. Ellenorzom, atalakithato-e...
-call :ConvPlan GPT
-if "!CV_STATUS!"=="OK" (
-    set "CONVERT=GPT"
-    set "MODE=UEFI - a lemez GPT-re alakitasaval"
-    echo   [OK] Atalakithato - a Windows particio adatai megmaradnak.
-    goto CONFIRM
+set "FINALFW=UEFI"
+set "VIAM2G="
+if "%SELGPT%"=="1" (
+    set "BCDFW=UEFI"
+    set "PTYPE=efi"
+    set "FS=fat32"
+    set "ACTIVE="
+    set "SIZE=300"
+    if "!SELBPS!"=="512" set "SIZE=100"
+    set "MODE=UEFI - GPT lemez"
+    goto PLAN
 )
-rem Nem alakithato at: marad MBR, FAT32 boot particio ESP tipussal (0xEF).
-rem A UEFI firmware MBR lemezrol is indit, ha talal rajta FAT particiot
-rem \EFI\BOOT\BOOTX64.EFI-vel - ezt a bcdboot /f UEFI letrehozza.
-echo   [INFO] GPT-re nem alakithato: !CV_MSG!
-echo          Marad MBR, a boot particio FAT32 lesz ESP tipussal - a legtobb UEFI gep ezt is inditja.
-set "MODE=UEFI - MBR lemezen"
-set "PTYPE=primary"
-set "SETID=ef"
-goto CONFIRM
-
-:MODELEG
-set "MODE=Legacy BIOS / MBR"
+rem MBR lemez: UEFI-hez GPT kell. Az mbr2gpt a lemezen levo boot-
+rem beallitasbol talalja meg a Windowst, ezert elobb Legacy boot kerul ra.
+call :FindM2G
+if not defined M2G (
+    echo.
+    echo   [HIBA] Ez MBR lemez - UEFI-hez GPT-re kell alakitani, de az mbr2gpt nem talalhato.
+    echo          Windows 10 1703 vagy ujabb kell hozza - futtasd egy ilyen Windowsbol.
+    goto ASKMODE
+)
+set "VIAM2G=1"
 set "BCDFW=BIOS"
 set "PTYPE=primary"
 set "FS=ntfs"
-set "SIZE=500"
 set "ACTIVE=1"
-set "SETID="
-set /a SHR=SIZE+16
-if "%SELGPT%"=="0" goto CONFIRM
-rem GPT lemez + Legacy: Legacy BIOS-bol GPT lemezrol a Windows nem indul,
-rem tehat a tablat MBR-re kell alakitani.
-echo.
-echo   Ez GPT lemez - Legacy boothoz MBR kell. Ellenorzom, atalakithato-e...
-call :ConvPlan MBR
-if not "!CV_STATUS!"=="OK" (
-    echo   [HIBA] MBR-re nem alakithato: !CV_MSG!
-    echo          Ezt a lemezt igy csak UEFI boottal lehet inditani.
+set "SIZE=300"
+set "MODE=UEFI - GPT, a lemez atalakitasa a Microsoft mbr2gpt eszkozevel"
+goto PLAN
+
+:MODELEG
+if "%SELGPT%"=="1" (
+    echo.
+    echo   [HIBA] Ez GPT lemez - Legacy BIOS-bol GPT lemezrol a Windows nem indul,
+    echo          GPT-rol MBR-re pedig nincs biztonsagos, adatvesztes nelkuli eszkoz.
+    echo          Ezt a lemezt UEFI boottal lehet inditani - valaszd az 1-est.
     goto ASKMODE
 )
-set "CONVERT=MBR"
-set "MODE=Legacy BIOS / MBR - a lemez MBR-re alakitasaval"
-echo   [OK] Atalakithato - a Windows particio adatai megmaradnak.
-goto CONFIRM
+set "FINALFW=BIOS"
+set "VIAM2G="
+set "BCDFW=BIOS"
+set "PTYPE=primary"
+set "FS=ntfs"
+set "ACTIVE=1"
+set "SIZE=500"
+set "MODE=Legacy BIOS - MBR lemez"
+goto PLAN
+
+rem =====================================================
+rem   3. REGI BOOT PARTICIOK FELMERESE (meg nem torol semmit)
+rem =====================================================
+:PLAN
+set /a SHR=SIZE+16
+echo.
+echo   A lemez particioinak felmerese...
+call :FindWinPart
+if not defined WINPART (
+    echo   [HIBA] Nem allapithato meg, melyik particion van a Windows.
+    echo          Biztonsagbol leallok - nem torlok es nem irok semmit.
+    goto FAIL
+)
+>>"%LOG%" echo A Windows particio szama: %WINPART%
+call :FindBootParts
 
 rem =====================================================
 rem   MEGEROSITES
 rem =====================================================
-:CONFIRM
 echo.
 echo   ===================================================
 echo     Lemez:     !SELMOD! ^| !SELSIZE! ^| %PSTYLE%
-echo     Windows:   %SELWIN%:\Windows
+echo     Windows:   %SELWIN%:\Windows - particio %WINPART%
 echo     Boot mod:  %MODE%
 echo   ===================================================
 echo   Ezt fogom csinalni:
-if defined CONVERT (
-    echo     0. A particios tabla atalakitasa %PSTYLE%-rol %CONVERT%-re. A Windows particio
-    echo        bajtra ugyanott marad, a fajljaihoz nem nyulok, es a Windows
-    echo        meghajtobetu-terkepet az uj azonositora frissitem.
-    if defined CV_DROP echo        Torlodik: !CV_DROP! - ezeken nincs adat, a boot ugyis ujra lesz irva.
+if defined DELLIST (
+    echo     1. A lemez REGI boot particioinak TORLESE:
+    for %%p in (%DELLIST%) do echo          - !DELDESC_%%p!
+) else (
+    echo     1. Regi boot particio nincs a lemezen - nincs mit torolni.
 )
-echo     1. Uj %SIZE% MB-os boot particio ezen a lemezen, %FS% fajlrendszerrel.
+if defined KEPTLIST (
+    echo        NEM torlom, mert mas fajlok is vannak rajta:
+    for %%p in (%KEPTLIST%) do echo          - !KEPTDESC_%%p!
+)
+echo     2. Uj %SIZE% MB-os boot particio, %FS% fajlrendszerrel.
 echo        Ha nincs eleg szabad hely, a %SELWIN%: kotetet zsugoritom %SHR% MB-tal.
-echo     2. Boot fajlok irasa az uj particiora a %SELWIN%:\Windows-bol.
-if defined ACTIVE echo     3. Az uj particio lesz az aktiv, es uj MBR boot kod kerul a lemezre.
-if not defined CONVERT echo   A regi boot particiokhoz es a Windows adataihoz nem nyulok.
-if defined CONVERT (
-    echo.
-    echo   A tabla atalakitasa a legkockazatosabb lepes: ha a lemezen fontos adat
-    echo   van, legyen rola mentes. BitLockeres gepnel az elso indulaskor a
-    echo   helyreallito kulcsot kerheti.
+echo     3. Boot fajlok irasa a %SELWIN%:\Windows-bol, single boot.
+if defined VIAM2G (
+    echo     4. A lemez atalakitasa GPT-re a Microsoft mbr2gpt eszkozevel.
+    echo        Elobb csak ellenoriz - ha nem engedi, megallok, es a lemez
+    echo        akkor Legacy BIOS modban indul.
 )
+echo   A Windows particiohoz nem nyulok.
 echo.
 set "CONF="
 set /p "CONF=  Folytatod? (i/n): "
@@ -308,36 +308,24 @@ if /i not "!CONF!"=="i" (
     goto END
 )
 >>"%LOG%" echo.
->>"%LOG%" echo ===== VALASZTAS: lemez=%SELNUM% [!SELMOD!] %PSTYLE%, Windows=%SELWIN%:, mod=%MODE%, atalakitas=%CONVERT%, particio=%PTYPE% %SIZE% MB %FS% =====
+>>"%LOG%" echo ===== VALASZTAS: lemez=%SELNUM% [!SELMOD!] %PSTYLE%, Windows=%SELWIN%: particio %WINPART%, mod=%MODE%, torles=[%DELLIST%], uj=%PTYPE% %SIZE% MB %FS% =====
 set "CHANGED="
 
 rem =====================================================
-rem   0. PARTICIOS TABLA ATALAKITASA (ha kell)
+rem   4. REGI BOOT PARTICIOK TORLESE
 rem =====================================================
-if defined CONVERT (
+if defined DELLIST (
     echo.
-    echo   [0/3] Particios tabla atalakitasa %CONVERT%-re...
-    call :ConvRun
-    if defined CV_CHANGED set "CHANGED=1"
-    if not "!CV_STATUS!"=="OK" (
-        echo.
-        echo   [HIBA] Az atalakitas nem sikerult: !CV_MSG!
-        goto FAIL
-    )
-    echo   [OK] A lemez most %CONVERT%.
-    if not "!CV_REG!"=="1" (
-        echo   [FIGYELEM] A Windows meghajtobetu-terkepet nem sikerult frissiteni.
-        echo              Ha a Windows nem indul vagy nem C: lesz, ez az oka - reszletek a logban.
-    )
-    if "%CONVERT%"=="GPT" (set "SELGPT=1") else (set "SELGPT=0")
-    set "PSTYLE=%CONVERT%"
+    echo   [1/4] Regi boot particiok torlese...
+    call :DeleteBootParts
 )
+if defined DELFAIL goto FAIL
 
 rem =====================================================
-rem   3. UJ BOOT PARTICIO
+rem   5. UJ BOOT PARTICIO
 rem =====================================================
 echo.
-echo   [1/3] Uj boot particio letrehozasa...
+echo   [2/4] Uj boot particio letrehozasa...
 call :FreeLetter
 if not defined BL (
     echo   [HIBA] Nincs szabad meghajtobetu a particiohoz.
@@ -352,7 +340,7 @@ if exist %BL%:\ goto PARTOK
 call :ListParts
 if not "%PCOUNT%"=="%PCB%" goto PARTHALF
 
-rem Nem jott letre semmi -> nincs eleg szabad hely. Zsugoritas, majd ujra.
+rem Nem jott letre semmi - nincs eleg szabad hely. Zsugoritas, majd ujra.
 echo   [INFO] Nincs eleg szabad hely a lemezen - a %SELWIN%: kotet zsugoritasa %SHR% MB-tal...
 >"%DPS%" (
     echo select volume %SELWIN%
@@ -386,8 +374,7 @@ echo   [HIBA] A particio letrejott, de a formazas vagy a betujel kiosztasa nem s
 echo   Diskpart uzenete:
 type "%DPO%"
 echo.
-echo   A felig kesz particiot diskpart-tal torolheted: select disk %SELNUM%, list partition,
-echo   select partition N, delete partition override - utana futtasd ujra ezt a scriptet.
+echo   A felig kesz particiot a Lemezkezeloben torolheted, utana futtasd ujra ezt a scriptet.
 goto FAIL
 
 :PARTOK
@@ -399,10 +386,11 @@ if defined NEWPART (
 )
 
 rem =====================================================
-rem   4. BOOT FAJLOK
+rem   6. BOOT FAJLOK
 rem =====================================================
-echo   [2/3] Boot fajlok irasa...
+echo   [3/4] Boot fajlok irasa...
 set "BOOTERR="
+set "NOBOOTSECT="
 if "%BCDFW%"=="BIOS" call :WriteMbr
 call :RunBcdboot
 if not "%RC%"=="0" (
@@ -432,34 +420,20 @@ if defined MISSING (
     call :SingleBoot "%CHK1%"
 )
 
-rem =====================================================
-rem   5. LEZARAS: betujel levetele (+ ESP tipus MBR lemezen)
-rem =====================================================
-echo   [3/3] Particio lezarasa...
+rem Betujel levetele az uj particiorol
 >"%DPS%" (
     echo select disk %SELNUM%
     if defined NEWPART (echo select partition %NEWPART%) else (echo select volume %BL%)
     echo remove letter=%BL%
 )
 call :DPRun
-if defined SETID (
-    if defined NEWPART (
-        >"%DPS%" (
-            echo select disk %SELNUM%
-            echo select partition %NEWPART%
-            echo set id=%SETID% override
-        )
-        call :DPRun
-        if "!DPRC!"=="0" (
-            echo   [OK] ESP tipus beallitva.
-        ) else (
-            echo   [FIGYELEM] Az ESP tipus beallitasa nem sikerult - a legtobb gep igy is indit.
-        )
-    ) else (
-        echo   [FIGYELEM] Az uj particio szama nem derult ki - ESP tipus kihagyva.
-    )
-)
-echo   [OK] Kesz.
+if defined BOOTERR goto DONE
+
+rem =====================================================
+rem   7. MBR lemez + UEFI: atalakitas GPT-re (mbr2gpt)
+rem =====================================================
+set "M2GFAIL="
+if defined VIAM2G call :DoM2G
 goto DONE
 
 rem =====================================================
@@ -476,12 +450,25 @@ if defined BOOTERR (
     echo   Reszletes log: %LOG%
     goto END
 )
+if defined M2GFAIL (
+    echo   ===================================================
+    echo     UEFI - GPT NEM LETT: az mbr2gpt nem alakitotta at a lemezt.
+    echo     A lemez most Legacy BIOS modban bootolhato - MBR, aktiv boot particio.
+    echo   ===================================================
+    if defined NOBOOTSECT (
+        echo   [FIGYELEM] A bootsect itt nem erheto el, az MBR boot kod nem lett ujrairva.
+        echo              Ha Legacy modban nem indul, futtasd ujra WinPE-bol, Legacy modot valasztva.
+    )
+    echo.
+    echo   Reszletes log: %LOG%
+    goto END
+)
 echo   ===================================================
-echo     KESZ: uj %MODE% boot particio a %SELNUM%. lemezen.
+echo     KESZ: %MODE%
 echo   ===================================================
 echo.
 echo   Mielott ujrainditasz, a gep BIOS-aban:
-if "%BCDFW%"=="UEFI" (
+if "%FINALFW%"=="UEFI" (
     echo     - a boot mod legyen UEFI, CSM/Legacy KI
     echo     - a boot sorrendben a Windows Boot Manager legyen elol
 ) else (
@@ -490,11 +477,13 @@ if "%BCDFW%"=="UEFI" (
 )
 echo     - a SATA mod maradjon azon, amin a Windows telepult - altalaban AHCI.
 echo       Ha RAID-re vagy IDE-re allitod, a Windows INACCESSIBLE_BOOT_DEVICE hibaval all le.
-if "%BCDFW%"=="UEFI" if "%FWMODE%"=="Legacy BIOS" echo   [FIGYELEM] Ez a gep most Legacy modban fut - a BIOS-ban at kell allitani UEFI-re.
-if "%BCDFW%"=="BIOS" if "%FWMODE%"=="UEFI" echo   [FIGYELEM] Ez a gep most UEFI modban fut - a BIOS-ban be kell kapcsolni a CSM/Legacy modot.
-if "%BCDFW%"=="UEFI" if not defined ISPE (
+if "%FINALFW%"=="BIOS" if defined NOBOOTSECT (
+    echo   [FIGYELEM] A bootsect itt nem erheto el, az MBR boot kod nem lett ujrairva.
+    echo              Ha Legacy modban nem indul, futtasd ujra WinPE-bol.
+)
+if "%FINALFW%"=="UEFI" if not defined ISPE (
     echo.
-    echo   [INFO] A bcdboot UEFI modban ennek a gepnek - amin most futtattad - a boot
+    echo   [INFO] UEFI modban a boot eszkoz ennek a gepnek - amin most futtattad - a boot
     echo          bejegyzeset is atallithatja az uj lemezre. Ha ez a gep utana nem indulna,
     echo          a sajat Windowsabol vagy WinPE-bol ez visszaallitja: bcdboot C:\Windows
 )
@@ -531,8 +520,6 @@ goto END
 del "%DPS%" >nul 2>&1
 del "%DPO%" >nul 2>&1
 del "%DRV%" >nul 2>&1
-del "%PS1%" >nul 2>&1
-del "%CVO%" >nul 2>&1
 echo.
 pause
 exit /b 0
@@ -562,8 +549,7 @@ type "%DPO%" >>"%LOG%" 2>nul
 goto :eof
 
 :IsNum
-rem ISNUM=1, ha a %1 nevu valtozo csak szamjegyekbol all (pipe es findstr
-rem nelkul, igy a felhasznalo altal begepelt furcsa karakterek sem torik el).
+rem ISNUM=1, ha a %1 nevu valtozo csak szamjegyekbol all.
 set "ISNUM="
 set "IV=!%~1!"
 if not defined IV goto :eof
@@ -586,15 +572,20 @@ set "DNUM_%DCOUNT%=%DN%"
 set "DGPT_%DCOUNT%=0"
 set "DSIZE_%DCOUNT%=%DS1% %DS2%"
 set "DMOD_%DCOUNT%=Lemez %DN%"
+set "DBPS_%DCOUNT%="
 set "DWIN_%DCOUNT%="
 set "DWCNT_%DCOUNT%=0"
 goto :eof
 
 :GetModel
-rem Lemez modellnev (wmic - opcionalis, uj Windowson hianyozhat).
+rem Lemez modellnev es szektormeret (wmic - opcionalis, uj Windowson hianyozhat;
+rem szektormeret nelkul az EFI particio 300 MB lesz, ami minden lemezen jo).
 set "N=!DNUM_%1!"
 for /f "tokens=1* delims==" %%a in ('wmic diskdrive where "Index=%N%" get Model /value 2^>nul ^| find "="') do (
     for /f "delims=" %%c in ("%%b") do if not "%%c"=="" set "DMOD_%1=%%c"
+)
+for /f "tokens=1* delims==" %%a in ('wmic diskdrive where "Index=%N%" get BytesPerSector /value 2^>nul ^| find "="') do (
+    for /f "delims=" %%c in ("%%b") do if not "%%c"=="" set "DBPS_%1=%%c"
 )
 goto :eof
 
@@ -655,6 +646,205 @@ if not defined ISNUM goto :eof
 if defined WOPT_%WC% set "SELWIN=!WOPT_%WC%!"
 goto :eof
 
+:FindM2G
+rem mbr2gpt helye: a futo rendszer System32-je, kulonben a PATH.
+set "M2G="
+if exist "%SystemRoot%\System32\mbr2gpt.exe" set "M2G=%SystemRoot%\System32\mbr2gpt.exe"
+if defined M2G goto :eof
+for /f "delims=" %%m in ('where mbr2gpt.exe 2^>nul') do if not defined M2G set "M2G=%%m"
+goto :eof
+
+:FindWinPart
+rem WINPART = a Windows kotet particioszama. Alaplemezen a "select volume"
+rem a hozza tartozo particiot is kijeloli, a "detail partition" elso sora
+rem "Partition N" (magyarul "Particio N" - mindketto "Part"-tal kezdodik).
+rem Ha nem derul ki, WINPART ures marad, es a hivo leall.
+set "WINPART="
+>"%DPS%" (
+    echo select volume %SELWIN%
+    echo detail partition
+)
+call :DPRun
+if not "%DPRC%"=="0" goto :eof
+for /f "usebackq tokens=1,2" %%a in ("%DPO%") do if not defined WINPART call :WinPartLine "%%a" "%%b"
+goto :eof
+
+:WinPartLine
+set "W1=%~1"
+set "W2=%~2"
+if /i not "!W1:~0,4!"=="Part" goto :eof
+call :IsNum W2
+if defined ISNUM set "WINPART=!W2!"
+goto :eof
+
+:FindBootParts
+rem A lemez particioinak vegignezese; DELLIST = a torlendo boot particiok
+rem szamai CSOKKENO sorrendben (a nagyobb szam torlese nem szamozza at a
+rem kisebbeket). A Windows particio SOHA nem kerulhet bele.
+set "DELLIST="
+set "KEPTLIST="
+call :ListParts
+for %%p in (%PNUMS%) do if not "%%p"=="%WINPART%" call :ClassifyPart %%p
+if defined DELLIST (
+    >>"%LOG%" echo Torlendo regi boot particiok: %DELLIST%
+) else (
+    >>"%LOG%" echo Regi boot particio nem talalhato.
+)
+goto :eof
+
+:ClassifyPart
+rem %1 = particioszam. Boot particio, ha 1 GB-nal kisebb, ES EFI tipusu
+rem VAGY boot fajlok vannak rajta. Minden dontes a logba kerul.
+set "CP=%1"
+set "CS=!PSIZE_%1!"
+set "CU=!PUNIT_%1!"
+rem Merethatar 1 GB: a Windows Legacy "System Reserved"-je 500-549 MB, egyes
+rem gyartok EFI particioja 500-650 MB - ennel nagyobb boot particio nincs.
+set "SMALL="
+if /i "!CU!"=="KB" set "SMALL=1"
+if /i "!CU!"=="MB" if !CS! LSS 1024 set "SMALL=1"
+if not defined SMALL (
+    >>"%LOG%" echo Particio %1 [!CS! !CU!]: nagy, nem boot particio - marad.
+    goto :eof
+)
+set "ISB="
+set "WHY="
+>"%DPS%" (
+    echo select disk %SELNUM%
+    echo select partition %1
+    echo detail partition
+)
+call :DPRun
+if not "%DPRC%"=="0" (
+    >>"%LOG%" echo Particio %1: detail partition hiba - marad.
+    goto :eof
+)
+findstr /i /c:"c12a7328" "%DPO%" >nul 2>&1 && set "ISB=1" && set "WHY=EFI rendszerparticio"
+findstr /i /r /c:": *ef *$" "%DPO%" >nul 2>&1 && set "ISB=1" && set "WHY=EFI tipusu particio"
+rem Meglevo betujel a kotet-sorbol: "* Volume 3   E   SYSTEM   FAT32 ..."
+set "EXL="
+for /f "usebackq tokens=1-4" %%a in ("%DPO%") do if "%%a"=="*" call :VolLetter "%%c" "%%d"
+set "TMPL="
+if not defined EXL (
+    call :FreeLetter
+    if defined BL (
+        >"%DPS%" (
+            echo select disk %SELNUM%
+            echo select partition %1
+            echo assign letter=!BL!
+        )
+        call :DPRun
+        call :Sleep 2
+        if exist !BL!:\ (
+            set "EXL=!BL!"
+            set "TMPL=!BL!"
+        )
+    )
+)
+if defined EXL (
+    if /i "!EXL!"=="%SELWIN%" (
+        >>"%LOG%" echo Particio %1: ez a Windows kotete - marad.
+        set "ISB="
+        goto ClassifyEnd
+    )
+    if exist "!EXL!:\bootmgr" set "ISB=1" & set "WHY=Legacy boot particio - bootmgr"
+    if exist "!EXL!:\Boot\BCD" set "ISB=1" & set "WHY=Legacy boot particio - Boot\BCD"
+    if exist "!EXL!:\EFI\Microsoft\Boot\BCD" set "ISB=1" & set "WHY=EFI boot fajlok"
+    if exist "!EXL!:\EFI\Boot\bootx64.efi" set "ISB=1" & set "WHY=EFI boot fajlok"
+)
+rem Adatvedelem: ha a boot fajlok mellett BARMI MAS is van a gyokerben,
+rem nem toroljuk - a megerosites nevesiti, mi van rajta.
+set "OTHERS="
+if defined EXL if defined ISB call :CheckRoot !EXL!
+if defined OTHERS (
+    set "ISB="
+    set "KEPTLIST=!KEPTLIST! %CP%"
+    set "KEPTDESC_%CP%=particio %CP%, !CS! !CU! - a boot fajlok mellett mas is van rajta:!OTHERS!"
+    >>"%LOG%" echo Particio %CP%: boot fajlok mellett egyeb elemek:!OTHERS! - NEM toroljuk.
+)
+:ClassifyEnd
+if defined TMPL (
+    >"%DPS%" (
+        echo select disk %SELNUM%
+        echo select partition %CP%
+        echo remove letter=!TMPL!
+    )
+    call :DPRun
+)
+if defined ISB (
+    set "DELLIST=%CP% !DELLIST!"
+    set "DELDESC_%CP%=particio %CP%, !CS! !CU! - !WHY!"
+    >>"%LOG%" echo Particio %CP% [!CS! !CU!]: BOOT PARTICIO - !WHY! - torlendo.
+) else (
+    >>"%LOG%" echo Particio %CP% [!CS! !CU!]: nem boot particio - marad.
+)
+goto :eof
+
+:CheckRoot
+rem OTHERS = a %1: gyokereben levo, NEM boot-jellegu elemek listaja.
+rem Rejtett/rendszer elemeket is nez (dir /a). Ures lista = csak boot van rajta.
+set "OTHERS="
+for /f "delims=" %%n in ('dir /a /b "%~1:\" 2^>nul') do call :RootItem "%%n"
+goto :eof
+
+:RootItem
+set "RI=%~1"
+for %%k in ("EFI" "Boot" "bootmgr" "BOOTNXT" "BOOTSECT.BAK" "bootmgr.efi" "System Volume Information" "$RECYCLE.BIN" "Recovery" "$WINRE_BACKUP_PARTITION.MARKER") do if /i "!RI!"=="%%~k" goto :eof
+set "OTHERS=!OTHERS! [!RI!]"
+goto :eof
+
+:VolLetter
+rem A kotet-sor 3. tokenje a kotet szama, a 4. a betu (ha egyetlen karakter).
+set "V3=%~1"
+set "V4=%~2"
+call :IsNum V3
+if not defined ISNUM goto :eof
+if not "!V4:~1!"=="" goto :eof
+for %%L in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do if /i "!V4!"=="%%L" set "EXL=%%L"
+goto :eof
+
+:DeleteBootParts
+rem A DELLIST csokkeno sorrendu. Minden torles elott ujra ellenorizzuk,
+rem hogy nem a Windows particio / kotet.
+set "DELFAIL="
+for %%p in (%DELLIST%) do if not defined DELFAIL call :DelOne %%p
+goto :eof
+
+:DelOne
+if "%1"=="%WINPART%" (
+    echo   [HIBA] A torlesi lista a Windows particiot tartalmazna - leallok.
+    set "DELFAIL=1"
+    goto :eof
+)
+>"%DPS%" (
+    echo select disk %SELNUM%
+    echo select partition %1
+    echo detail partition
+)
+call :DPRun
+set "EXL="
+for /f "usebackq tokens=1-4" %%a in ("%DPO%") do if "%%a"=="*" call :VolLetter "%%c" "%%d"
+if /i "!EXL!"=="%SELWIN%" (
+    echo   [HIBA] A %1. particio a Windows kotete - nem torlom, leallok.
+    set "DELFAIL=1"
+    goto :eof
+)
+>"%DPS%" (
+    echo select disk %SELNUM%
+    echo select partition %1
+    echo delete partition override
+)
+call :DPRun
+if "%DPRC%"=="0" (
+    echo   [OK] Torolve: !DELDESC_%1!
+    set "CHANGED=1"
+) else (
+    echo   [HIBA] Nem sikerult torolni: !DELDESC_%1! - diskpart uzenete:
+    type "%DPO%"
+    set "DELFAIL=1"
+)
+goto :eof
+
 :FreeLetter
 rem Szabad betu keresese. Az "exist" egy ures CD-meghajtot szabadnak latna,
 rem ezert az fsutil listajat is nezzuk (kimenet: "Drives: C:\ D:\ ...").
@@ -668,28 +858,38 @@ for %%L in (S R Q P O N M L K) do if not defined BL (
 goto :eof
 
 :ListParts
-rem PCOUNT = particiok szama a kivalasztott lemezen (lokalizacio-fuggetlen:
-rem "Partition N" es "Particio N" is "Part"-tal kezdodik).
+rem PCOUNT = particiok szama, PNUMS = a szamaik, PSIZE_n / PUNIT_n = meretuk.
+rem Lokalizacio-fuggetlen: "Partition N" es "Particio N" is "Part"-tal kezdodik.
 >"%DPS%" (
     echo select disk %SELNUM%
     echo list partition
 )
 call :DPRun
 set /a PCOUNT=0
-for /f "usebackq tokens=1-3" %%a in ("%DPO%") do call :CountLine "%%a" "%%b" "%%c"
->>"%LOG%" echo Particiok szama a %SELNUM%. lemezen: %PCOUNT%
+set "PNUMS="
+for /f "usebackq tokens=1-6" %%a in ("%DPO%") do call :PartLine "%%a" "%%b" "%%c" "%%d" "%%e" "%%f"
+>>"%LOG%" echo Particiok a %SELNUM%. lemezen: [%PNUMS%] - %PCOUNT% db
 goto :eof
 
-:CountLine
-set "C1=%~1"
-set "C2=%~2"
-if "!C1!"=="*" (
-    set "C1=%~2"
-    set "C2=%~3"
+:PartLine
+rem "  Partition 2    System   100 MB  1024 KB"  vagy csillaggal az elejen.
+set "L1=%~1"
+set "L2=%~2"
+set "L4=%~4"
+set "L5=%~5"
+if "!L1!"=="*" (
+    set "L1=%~2"
+    set "L2=%~3"
+    set "L4=%~5"
+    set "L5=%~6"
 )
-if /i not "!C1:~0,4!"=="Part" goto :eof
-call :IsNum C2
-if defined ISNUM set /a PCOUNT+=1
+if /i not "!L1:~0,4!"=="Part" goto :eof
+call :IsNum L2
+if not defined ISNUM goto :eof
+set /a PCOUNT+=1
+set "PNUMS=!PNUMS! !L2!"
+set "PSIZE_!L2!=!L4!"
+set "PUNIT_!L2!=!L5!"
 goto :eof
 
 :CreatePart
@@ -697,11 +897,13 @@ rem Microsoft sajat WinPE mintaszkriptjeinek sorrendje:
 rem create -> format -> assign [-> active]. A vegen a "list partition"
 rem csillaggal jeloli a fokuszban levot = az imen letrehozott particiot.
 rem Ha a create elbukik, a diskpart ott megall, es semmi nem valtozik.
+rem Cimke: NTFS-en "System Reserved" (mint a Windows telepitonel), az EFI
+rem particio cimke nelkul.
 set "NEWPART="
 >"%DPS%" (
     echo select disk %SELNUM%
     echo create partition %PTYPE% size=%SIZE%
-    echo format quick fs=%FS% label=SYSTEM
+    if "%FS%"=="ntfs" (echo format quick fs=ntfs label="System Reserved") else (echo format quick fs=%FS%)
     echo assign letter=%BL%
     if defined ACTIVE echo active
     echo list partition
@@ -720,22 +922,12 @@ goto :eof
 
 :WriteMbr
 rem Legacy: uj MBR boot kod + a particio boot szektora. A bootsect csak
-rem WinPE-ben / telepito media-n van; teljes Windowson hianyozhat - ott a
-rem formazas mar Windows boot szektort irt, es a regi MBR kod is az aktiv
-rem particiot inditja. Tablaatalakitas utan viszont a "clean" nullazta az
-rem MBR-t, ott a bootsect nelkul a lemez nem indulna - ezt kiirjuk.
+rem WinPE-ben / telepito media-n van; teljes Windowson hianyozhat.
+set "NOBOOTSECT="
 where bootsect >nul 2>&1
 if errorlevel 1 (
-    if defined CONVERT (
-        echo   [HIBA] bootsect nem elerheto, az uj MBR-ben pedig nincs boot kod.
-        echo          Futtasd ezt WinPE-bol, vagy utana: bootrec /fixmbr
-        set "BOOTERR=1"
-    ) else (
-        echo   [FIGYELEM] bootsect nem elerheto - az MBR boot kod nem lett ujrairva.
-        echo              Ha a gep Legacy modban nem indul errol a lemezrol, futtasd ujra
-        echo              ezt a scriptet WinPE-bol - ott van bootsect, es azt is megirja.
-    )
-    >>"%LOG%" echo bootsect nem elerheto - kihagyva
+    set "NOBOOTSECT=1"
+    >>"%LOG%" echo bootsect nem elerheto - az MBR boot kod nem lett ujrairva
     goto :eof
 )
 bootsect /nt60 %BL%: /mbr >"%DPO%" 2>&1
@@ -746,7 +938,6 @@ if "%RC%"=="0" (
 ) else (
     echo   [FIGYELEM] A bootsect hibat jelzett:
     type "%DPO%"
-    if defined CONVERT set "BOOTERR=1"
 )
 goto :eof
 
@@ -781,10 +972,9 @@ echo   [OK] bcdboot sikeres.
 goto :eof
 
 :SingleBoot
-rem Single boot: az uj BCD-ben csak a kivalasztott Windows van (a bcdboot
-rem uj, ures store-t hoz letre az uj particion), a menu nem varakozik.
-rem Az "osdevice" sorokat szamoljuk - a bcdedit mezonevei nem lokalizaltak,
-rem az "identifier" felirat viszont igen, ezert arra nem epitunk.
+rem Single boot: az uj BCD-ben csak a kivalasztott Windows van, a menu nem
+rem varakozik. Az "osdevice" sorokat szamoljuk - a bcdedit mezonevei nem
+rem lokalizaltak, az "identifier" felirat viszont igen.
 bcdedit /store %1 /timeout 0 >"%DPO%" 2>&1
 set "RC=%ERRORLEVEL%"
 call :LogDPO "bcdedit timeout 0 - rc=%RC%"
@@ -799,365 +989,64 @@ if "%OSCNT%"=="1" (
 )
 goto :eof
 
-:ExtractPS
-rem A fajl vegere agyazott PowerShell reszt kiirja a %PS1%-be.
-rem PSOK=1, ha sikerult ES a Storage modul (Get-Partition) elerheto.
-set "PSOK="
-set "BF_PS1=%PS1%"
-where powershell >nul 2>&1 || goto :eof
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$t=[IO.File]::ReadAllText($env:BF_SELF); $m='##'+'PSCONV##'; $i=$t.LastIndexOf($m); if($i -lt 0){exit 2}; [IO.File]::WriteAllText($env:BF_PS1, $t.Substring($i+$m.Length).TrimStart()); if(Get-Command Get-Partition -ErrorAction SilentlyContinue){exit 0}else{exit 3}" >nul 2>&1
-if errorlevel 1 goto :eof
-set "PSOK=1"
-goto :eof
-
-:ConvPlan
-rem Csak ELLENORZES (semmit nem ir): atalakithato-e a lemez %1 tablara.
-set "CV_STATUS=" & set "CV_MSG=" & set "CV_DROP=" & set "CV_CHANGED=" & set "CV_REG="
-rem KIKAPCSOLVA (2026-09-23): az elso eles futas egy lemez particios tablajat
-rem tonkretette. Amig VHD-n vegig nem ment, a tablat NEM alakitjuk at.
-set "CV_STATUS=ERR"
-set "CV_MSG=a particios tabla atalakitasa ebben a verzioban ki van kapcsolva"
-goto :eof
-if not defined ISPE if /i "%SELWIN%"=="%SystemDrive:~0,1%" (
-    set "CV_STATUS=ERR"
-    set "CV_MSG=ez a most futo Windows lemeze - az atalakitashoz inditsd a gepet WinPE-rol"
+:DoM2G
+rem MBR lemez + UEFI: a Legacy boot mar a lemezen van, most a Microsoft
+rem mbr2gpt-je alakitja GPT-re (EFI particio + UEFI boot fajlok, a
+rem meghajtobetu-terkep frissitese). Elobb /validate - az csak olvas.
+set "M2GFAIL="
+set "M2GARGS=/disk:%SELNUM%"
+if not defined ISPE set "M2GARGS=/disk:%SELNUM% /allowFullOS"
+echo   [4/4] Atalakitas GPT-re - mbr2gpt ellenorzes, csak olvas...
+call :M2GRun validate
+if not "%RC%"=="0" (
+    echo   [INFO] Az ellenorzes nem ment at - helyet csinalok az EFI particionak, es ujraprobalom.
+    >"%DPS%" (
+        echo select volume %SELWIN%
+        echo shrink desired=316 minimum=316
+    )
+    call :DPRun
+    if "!DPRC!"=="0" call :M2GRun validate
+)
+if not "%RC%"=="0" (
+    echo   [HIBA] Az mbr2gpt szerint ez a lemez nem alakithato at. Uzenete:
+    type "%DPO%"
+    call :M2GErrLog
+    set "M2GFAIL=1"
     goto :eof
 )
-call :ExtractPS
-if not defined PSOK (
-    set "CV_STATUS=ERR"
-    set "CV_MSG=ebben a kornyezetben nincs PowerShell Storage modul - az atalakitashoz az kell"
+echo   [OK] Atalakithato. Atalakitas - ez par percig tarthat...
+call :M2GRun convert
+set "GPTNOW="
+>"%DPS%" (
+    echo select disk %SELNUM%
+    echo uniqueid disk
+)
+call :DPRun
+findstr /r /c:"-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-" "%DPO%" >nul 2>&1 && set "GPTNOW=1"
+if "%RC%"=="0" if defined GPTNOW (
+    echo   [OK] A lemez most GPT, a UEFI boot kesz.
+    set "BCDFW=UEFI"
+    set "PSTYLE=GPT"
     goto :eof
 )
-call :ConvCall plan %1
+echo   [HIBA] Az atalakitas nem sikerult - mbr2gpt kod: %RC%, GPT: %GPTNOW%. Reszletek a logban.
+call :M2GErrLog
+set "M2GFAIL=1"
 goto :eof
 
-:ConvRun
-rem A tenyleges atalakitas (a :ConvPlan mar kiirta a %PS1%-t).
-set "CV_STATUS=" & set "CV_MSG=" & set "CV_DROP=" & set "CV_CHANGED=" & set "CV_REG="
-if not exist "%PS1%" call :ExtractPS
-call :ConvCall run %CONVERT%
+:M2GRun
+"%M2G%" /%1 %M2GARGS% >"%DPO%" 2>&1
+set "RC=%ERRORLEVEL%"
+call :LogDPO "mbr2gpt /%1 %M2GARGS% - rc=%RC%"
 goto :eof
 
-:ConvCall
-rem %1 = plan/run, %2 = GPT/MBR. Eredmeny: CV_STATUS, CV_MSG, CV_DROP, CV_CHANGED, CV_REG.
-del "%CVO%" >nul 2>&1
+:M2GErrLog
+rem Az mbr2gpt sajat hibanaploja a Windows mappaban van.
 >>"%LOG%" echo.
->>"%LOG%" echo ===== tabla-atalakitas: %1 %2 - lemez %SELNUM%, Windows %SELWIN%:, zsugoritas %SHR% MB =====
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -Disk %SELNUM% -Target %2 -Win %SELWIN% -ShrinkMB %SHR% -Mode %1 -Log "%LOG%" -Out "%CVO%" 2>"%TMPD%\bf_ps_err.txt"
-type "%TMPD%\bf_ps_err.txt" >>"%LOG%" 2>nul
-del "%TMPD%\bf_ps_err.txt" >nul 2>&1
-if not exist "%CVO%" (
-    set "CV_STATUS=ERR"
-    set "CV_MSG=a PowerShell resz hibaval leallt - reszletek a logban"
-    goto :eof
-)
-for /f "usebackq tokens=1* delims==" %%a in ("%CVO%") do set "CV_%%a=%%b"
-if not defined CV_STATUS (
-    set "CV_STATUS=ERR"
-    set "CV_MSG=a PowerShell resz nem adott eredmenyt"
-)
+>>"%LOG%" echo ===== mbr2gpt setuperr.log =====
+type "%SystemRoot%\setuperr.log" >>"%LOG%" 2>nul
 goto :eof
 
 :Sleep
 ping -n %1 127.0.0.1 >nul 2>&1
 goto :eof
-
-rem =====================================================
-rem   Az alabbi resz PowerShell - a batch sosem jut el ide,
-rem   a :ExtractPS irja ki a marker utani szoveget .ps1-be.
-rem =====================================================
-##PSCONV##
-param(
-    [int]$Disk,
-    [string]$Target,
-    [string]$Win,
-    [int]$ShrinkMB,
-    [string]$Mode,
-    [string]$Log,
-    [string]$Out
-)
-# BootFixer - particios tabla atalakitasa (GPT <-> MBR) ADATVESZTES NELKUL.
-#
-# A modszer: a Windows particiot eloszor zsugoritjuk (igy a vegen szabad hely
-# lesz a boot particionak, es a Windows nem er bele a lemez utolso MB-jaba),
-# megjegyezzuk a PONTOS kezdetet es meretet bajtban, a diskpart "clean"-nel
-# csak a particios tablat toroljuk (a lemez elso es utolso 1 MB-jat irja, a
-# particiot nem), atalakitjuk, majd a particiot bajtra ugyanoda hozzuk letre.
-# A fajlrendszerhez egyetlen bajtot sem irunk. Vegul a Windows sajat
-# MountedDevices bejegyzeset az uj azonositora allitjuk, kulonben a Windows
-# nem kapna C: betut es nem indulna el.
-#
-# Plan mod: csak ellenoriz, semmit nem ir. Run mod: vegrehajt.
-# Eredmeny a -Out fajlba: STATUS=OK|ERR|NOOP, MSG=..., DROP=..., CHANGED=1, REG=1
-
-$ErrorActionPreference = 'Continue'
-$MSR   = '{e3c9e316-0b5c-4db8-817d-f92df00215ae}'
-$ESP   = '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'
-$BASIC = '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}'
-$MB    = [int64]1048576
-$Win   = $Win.Substring(0, 1).ToUpper()
-$Target = $Target.ToUpper()
-$script:Changed = $false
-
-function Log-Line([string]$m) {
-    try { Add-Content -LiteralPath $Log -Value ('[PS] ' + $m) -Encoding ASCII } catch { }
-}
-function Say([string]$m) {
-    Write-Host ('  ' + $m)
-    Log-Line $m
-}
-function Safe([string]$s) {
-    if ($null -eq $s) { return '' }
-    return (($s -replace '[^\x20-\x7E]', '?') -replace '[&|<>^!%"]', ' ')
-}
-function Finish([string]$status, [string]$msg, [hashtable]$extra) {
-    $lines = @(('STATUS=' + $status), ('MSG=' + (Safe $msg)))
-    if ($script:Changed) { $lines += 'CHANGED=1' }
-    if ($extra) { foreach ($k in $extra.Keys) { $lines += ($k + '=' + (Safe ([string]$extra[$k]))) } }
-    Set-Content -LiteralPath $Out -Value $lines -Encoding ASCII
-    Log-Line ('EREDMENY: ' + ($lines -join ' | '))
-    exit 0
-}
-function MbOf([int64]$b) { return [int64][math]::Round($b / $MB) }
-function Hex([byte[]]$b) {
-    if ($null -eq $b) { return '(nincs)' }
-    return (($b | ForEach-Object { $_.ToString('X2') }) -join '')
-}
-
-function Run-Diskpart([string[]]$cmds) {
-    $f = Join-Path (Split-Path -Parent $Out) 'bf_conv_dp.txt'
-    Set-Content -LiteralPath $f -Value $cmds -Encoding ASCII
-    $o = (& diskpart.exe /s $f | Out-String)
-    $rc = $LASTEXITCODE
-    Log-Line ('diskpart [' + ($cmds -join ' / ') + '] kilepesi kod=' + $rc)
-    Log-Line $o
-    Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue
-    return $rc
-}
-
-function Analyze {
-    $r = @{ Err = $null; Disk = $null; Style = ''; Win = $null; Drop = @() }
-    try { $d = Get-Disk -Number $Disk -ErrorAction Stop }
-    catch { $r.Err = 'a lemez nem olvashato: ' + $_.Exception.Message; return $r }
-    $r.Disk = $d
-    $r.Style = [string]$d.PartitionStyle
-    if ($r.Style -ne 'GPT' -and $r.Style -ne 'MBR') { $r.Err = 'a lemez tablaja ismeretlen (' + $r.Style + ')'; return $r }
-    try { $parts = @(Get-Partition -DiskNumber $Disk -ErrorAction Stop) }
-    catch { $r.Err = 'a particiok nem olvashatok: ' + $_.Exception.Message; return $r }
-    $wp = $parts | Where-Object { ([string]$_.DriveLetter) -eq $Win } | Select-Object -First 1
-    if (-not $wp) { $r.Err = 'a ' + $Win + ': meghajto nem ezen a lemezen van'; return $r }
-    $r.Win = $wp
-    $block = @()
-    foreach ($p in $parts) {
-        if ($p.PartitionNumber -eq $wp.PartitionNumber) { continue }
-        $desc = 'particio ' + $p.PartitionNumber + ' (' + (MbOf $p.Size) + ' MB'
-        if (([string]$p.GptType) -eq $MSR) { $r.Drop += ($desc + ', MSR)') }
-        elseif ((([string]$p.GptType) -eq $ESP) -or ($p.MbrType -eq 239)) { $r.Drop += ($desc + ', regi EFI boot)') }
-        else {
-            $lt = ''
-            if ([string]$p.DriveLetter -match '[A-Z]') { $lt = ', ' + $p.DriveLetter + ':' }
-            $block += ($desc + $lt + ')')
-        }
-    }
-    if ($block.Count -gt 0) {
-        $r.Err = 'a lemezen mas particio is van: ' + ($block -join ', ') + ' - az atalakitas ezeket torolne, ezert nem csinalom'
-        return $r
-    }
-    if ([int64]$wp.Offset -lt $MB) {
-        $r.Err = 'a Windows particio a lemez elso 1 MB-jan belul kezdodik - igy nem alakithato at biztonsagosan'
-        return $r
-    }
-    if ($Target -eq 'MBR') {
-        $lim = [int64]$d.LogicalSectorSize * [int64]4294967296
-        if (([int64]$wp.Offset + [int64]$wp.Size) -gt $lim) {
-            $r.Err = 'a Windows particio tulnyulik az MBR hataran (512 bajtos szektornal 2 TB) - MBR-re nem alakithato'
-            return $r
-        }
-    }
-    try { $sup = Get-PartitionSupportedSize -DiskNumber $Disk -PartitionNumber $wp.PartitionNumber -ErrorAction Stop }
-    catch { $r.Err = 'a zsugorithatosag nem kerdezheto le: ' + $_.Exception.Message; return $r }
-    $want = [int64]$wp.Size - [int64]$ShrinkMB * $MB
-    if ($want -lt [int64]$sup.SizeMin) {
-        $r.Err = 'a ' + $Win + ': kotet nem zsugorithato ' + $ShrinkMB + ' MB-tal (keves a szabad hely rajta)'
-        return $r
-    }
-    return $r
-}
-
-function Read-SysLetter {
-    # A Windows SAJAT rendszerbetuje (a SOFTWARE hive SystemRoot erteke),
-    # nem az, amit a WinPE adott neki.
-    $letter = 'C'
-    & reg.exe load 'HKLM\BF_SOFT' ($Win + ':\Windows\System32\config\SOFTWARE') | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Say 'FIGYELEM: a Windows SOFTWARE hive nem toltheto be - feltetelezett rendszerbetu: C'
-        return $letter
-    }
-    try {
-        $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('BF_SOFT\Microsoft\Windows NT\CurrentVersion')
-        if ($k) {
-            $sr = [string]$k.GetValue('SystemRoot')
-            $k.Close()
-            Log-Line ('SystemRoot = ' + $sr)
-            if ($sr -match '^([A-Za-z]):') { $letter = $Matches[1].ToUpper() }
-        }
-    } catch { Log-Line ('SystemRoot olvasasi hiba: ' + $_.Exception.Message) }
-    finally {
-        [gc]::Collect(); [gc]::WaitForPendingFinalizers()
-        & reg.exe unload 'HKLM\BF_SOFT' | Out-Null
-    }
-    Say ('A Windows sajat rendszerbetuje: ' + $letter + ':')
-    return $letter
-}
-
-function Fix-Registry([string]$style, $part, [string]$sysLetter) {
-    # MountedDevices: \DosDevices\C: = a kotet azonositoja.
-    #   MBR: 4 bajt lemez-alairas + 8 bajt kezdo offset (little-endian)
-    #   GPT: "DMIO:ID:" + a particio GUID-ja (16 bajt)
-    try {
-        if ($style -eq 'MBR') {
-            $sig = [uint32](Get-Disk -Number $Disk).Signature
-            if ($sig -eq 0) {
-                $sig = [uint32](Get-Random -Minimum 268435456 -Maximum 2147483647)
-                Run-Diskpart @(('select disk ' + $Disk), ('uniqueid disk id=' + $sig.ToString('X8'))) | Out-Null
-                Update-HostStorageCache -ErrorAction SilentlyContinue
-                $sig = [uint32](Get-Disk -Number $Disk).Signature
-            }
-            $bytes = [byte[]]([BitConverter]::GetBytes($sig) + [BitConverter]::GetBytes([uint64]$part.Offset))
-        } else {
-            $bytes = [byte[]]([Text.Encoding]::ASCII.GetBytes('DMIO:ID:') + ([guid]([string]$part.Guid)).ToByteArray())
-        }
-    } catch {
-        Say ('FIGYELEM: az uj kotet-azonosito nem allapithato meg: ' + $_.Exception.Message)
-        return $false
-    }
-    & reg.exe load 'HKLM\BF_SYS' ($Win + ':\Windows\System32\config\SYSTEM') | Out-Null
-    if ($LASTEXITCODE -ne 0) { Say 'FIGYELEM: a Windows SYSTEM hive nem toltheto be'; return $false }
-    $ok = $false
-    try {
-        $k = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey('BF_SYS\MountedDevices')
-        $name = '\DosDevices\' + $sysLetter + ':'
-        Log-Line ('MountedDevices ' + $name + ' regi ertek: ' + (Hex ([byte[]]$k.GetValue($name))))
-        $k.SetValue($name, $bytes, [Microsoft.Win32.RegistryValueKind]::Binary)
-        Log-Line ('MountedDevices ' + $name + ' uj ertek:  ' + (Hex $bytes))
-        $k.Close()
-        $ok = $true
-        Say ('A Windows ' + $sysLetter + ': betuje az uj particiohoz rendelve.')
-    } catch { Say ('FIGYELEM: a MountedDevices irasa nem sikerult: ' + $_.Exception.Message) }
-    finally {
-        [gc]::Collect(); [gc]::WaitForPendingFinalizers(); Start-Sleep -Seconds 1
-        & reg.exe unload 'HKLM\BF_SYS' | Out-Null
-        if ($LASTEXITCODE -ne 0) { Start-Sleep -Seconds 3; & reg.exe unload 'HKLM\BF_SYS' | Out-Null }
-    }
-    return $ok
-}
-
-function Wait-Win {
-    for ($i = 0; $i -lt 15; $i++) {
-        if (Test-Path -LiteralPath ($Win + ':\Windows\System32')) { return $true }
-        Start-Sleep -Seconds 1
-    }
-    return $false
-}
-
-function Make-WinPart([string]$style, $gptType) {
-    # A friss tablan esetleg automatikusan letrejott particiok (pl. MSR) torlese,
-    # majd a Windows particio letrehozasa PONTOSAN a regi kezdettel.
-    Update-HostStorageCache -ErrorAction SilentlyContinue
-    foreach ($p in @(Get-Partition -DiskNumber $Disk -ErrorAction SilentlyContinue)) {
-        Say ('Automatikusan letrejott particio torlese: ' + $p.PartitionNumber + ' (' + (MbOf $p.Size) + ' MB)')
-        Remove-Partition -DiskNumber $Disk -PartitionNumber $p.PartitionNumber -Confirm:$false -ErrorAction Stop
-    }
-    # Felfele kerekitett meret: a particio lehet nagyobb a fajlrendszernel, kisebb soha.
-    $sz = [int64][math]::Ceiling($fsSize / $MB) * $MB
-    if ($style -eq 'GPT') {
-        $np = New-Partition -DiskNumber $Disk -Offset $off -Size $sz -GptType $gptType -ErrorAction Stop
-    } else {
-        $np = New-Partition -DiskNumber $Disk -Offset $off -Size $sz -MbrType IFS -ErrorAction Stop
-    }
-    Log-Line ('Uj particio: szam=' + $np.PartitionNumber + ' kezdet=' + $np.Offset + ' meret=' + $np.Size + ' (kert kezdet=' + $off + ', kert meret=' + $sz + ')')
-    if ([int64]$np.Offset -ne $off -or [int64]$np.Size -lt $fsSize) {
-        Remove-Partition -DiskNumber $Disk -PartitionNumber $np.PartitionNumber -Confirm:$false -ErrorAction SilentlyContinue
-        throw ('a particio nem a pontos helyre kerult (kert kezdet ' + $off + ', kapott ' + $np.Offset + ')')
-    }
-    try { Set-Partition -DiskNumber $Disk -PartitionNumber $np.PartitionNumber -NewDriveLetter $Win -ErrorAction Stop }
-    catch { Log-Line ('Betujel-hiba: ' + $_.Exception.Message) }
-    return (Get-Partition -DiskNumber $Disk -PartitionNumber $np.PartitionNumber)
-}
-
-function Restore([string]$why) {
-    Say ('HIBA: ' + $why)
-    Update-HostStorageCache -ErrorAction SilentlyContinue
-    $st = [string](Get-Disk -Number $Disk).PartitionStyle
-    $cur = @(Get-Partition -DiskNumber $Disk -ErrorAction SilentlyContinue | Where-Object { [int64]$_.Offset -eq $off })
-    if ($st -eq $orig -and $cur.Count -gt 0) {
-        Say 'Az eredeti tabla ep maradt - nincs mit visszaallitani.'
-        return $true
-    }
-    Say ('VISSZAALLITAS: az eredeti ' + $orig + ' tabla es a Windows particio visszairasa...')
-    Run-Diskpart @(('select disk ' + $Disk), 'clean', ('convert ' + $orig.ToLower())) | Out-Null
-    try {
-        $gt = $origGpt
-        if (-not $gt) { $gt = $BASIC }
-        $rp = Make-WinPart $orig $gt
-        if (Wait-Win) {
-            Say 'Visszaallitva - a Windows particio ujra olvashato.'
-            Fix-Registry $orig $rp $sysLetter | Out-Null
-            return $true
-        }
-    } catch { Say ('A visszaallitas sem sikerult: ' + $_.Exception.Message) }
-    Say ('KEZZEL VISSZAALLITHATO diskpart-tal: select disk ' + $Disk + ' / clean / convert ' + $orig.ToLower() +
-         ' / create partition primary offset=' + ($off / 1024) + ' size=' + [int64][math]::Ceiling($fsSize / $MB))
-    return $false
-}
-
-# ---------------- FO RESZ ----------------
-Log-Line ('Indul: mod=' + $Mode + ' lemez=' + $Disk + ' cel=' + $Target + ' Windows=' + $Win + ': zsugoritas=' + $ShrinkMB + ' MB')
-$a = Analyze
-if ($a.Err) { Finish 'ERR' $a.Err $null }
-if ($a.Style -eq $Target) { Finish 'NOOP' ('a lemez mar ' + $Target) $null }
-$drop = ($a.Drop -join ', ')
-if ($Mode -ne 'run') { Finish 'OK' ('atalakithato: ' + $a.Style + '-rol ' + $Target + '-re') @{ DROP = $drop } }
-
-$wp      = $a.Win
-$orig    = $a.Style
-$off     = [int64]$wp.Offset
-$origGpt = [string]$wp.GptType
-$sysLetter = Read-SysLetter
-
-Say ('Windows particio: kezdete ' + $off + ' bajt, merete ' + $wp.Size + ' bajt, tabla ' + $orig)
-Say ('Zsugoritas ' + $ShrinkMB + ' MB-tal...')
-$want = [int64]$wp.Size - [int64]$ShrinkMB * $MB
-try { Resize-Partition -DiskNumber $Disk -PartitionNumber $wp.PartitionNumber -Size $want -ErrorAction Stop }
-catch { Finish 'ERR' ('a zsugoritas nem sikerult: ' + $_.Exception.Message) $null }
-$script:Changed = $true
-$wp = Get-Partition -DiskNumber $Disk -PartitionNumber $wp.PartitionNumber
-$fsSize = [int64]$wp.Size
-if ([int64]$wp.Offset -ne $off) { Finish 'ERR' 'a zsugoritas utan megvaltozott a particio kezdete - leallok' $null }
-Say ('MENTO-ADAT (ha barmi felbeszakad): lemez ' + $Disk + ', eredeti tabla ' + $orig +
-     ', Windows particio kezdete ' + $off + ' bajt, merete ' + $fsSize + ' bajt')
-
-Say ('A particios tabla csereje ' + $Target + '-re...')
-Run-Diskpart @(('select disk ' + $Disk), 'clean', ('convert ' + $Target.ToLower())) | Out-Null
-Update-HostStorageCache -ErrorAction SilentlyContinue
-$st = [string](Get-Disk -Number $Disk).PartitionStyle
-if ($st -ne $Target) {
-    $ok = Restore ('a diskpart nem alakitotta at a tablat (most: ' + $st + ')')
-    Finish 'ERR' ('a tabla atalakitasa nem sikerult; visszaallitas: ' + $(if ($ok) { 'sikeres' } else { 'SIKERTELEN, lasd a logot' })) $null
-}
-try { $np = Make-WinPart $Target $BASIC }
-catch {
-    $e = $_.Exception.Message
-    $ok = Restore ('a Windows particio visszairasa nem sikerult: ' + $e)
-    Finish 'ERR' ($e + '; visszaallitas: ' + $(if ($ok) { 'sikeres' } else { 'SIKERTELEN, lasd a logot' })) $null
-}
-if (-not (Wait-Win)) {
-    $ok = Restore 'a Windows particio a helyen van, de nem olvashato'
-    Finish 'ERR' ('a Windows particio nem olvashato az atalakitas utan; visszaallitas: ' + $(if ($ok) { 'sikeres' } else { 'SIKERTELEN, lasd a logot' })) $null
-}
-Say ('A Windows particio a helyen van es olvashato (' + $Win + ':\Windows).')
-$regOk = Fix-Registry $Target $np $sysLetter
-$reg = '0'
-if ($regOk) { $reg = '1' }
-Finish 'OK' ('a lemez most ' + $Target) @{ REG = $reg; SYSLETTER = $sysLetter }
