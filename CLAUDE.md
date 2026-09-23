@@ -16,6 +16,12 @@ There is no build step, no tests, no dependencies. The `.cmd` file is the entire
 - `diskpart` output parsing must accept both English and Hungarian tokens (`Disk`/`Lemez`, `Partition`/`Partíció` matched via `Part` prefix, `System`/`Rendszer`), and must filter header lines (they contain `###`).
 - **GPT vs MBR is detected from `uniqueid disk`, not from the `*` in `list disk`.** GPT prints a GUID (`Disk ID: {…-XXXX-…}`), MBR an 8-hex signature. The old `find "*"` on the `list disk` line was wrong: both the `Gpt` and `Dyn` columns render `*`, so a dynamic MBR disk got misclassified as GPT. The GUID test uses regex `-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-`, which is locale-independent and immune to a hyphen in the machine name (only one dash).
 
+## v7 (2026-09-23): cleanup of the temporary Legacy partition + free-space handling
+
+First real v6 run (the USB SSD, MBR -> UEFI, log in the DriverVarazslo repo's user's D:\) succeeded, and showed two things:
+- **mbr2gpt did NOT reuse our temporary Legacy system partition**: its log says `Trying to shrink the OS partition` -> `Creating the EFI system partition`, i.e. it shrinks Windows and puts a fresh ESP right AFTER the Windows partition. Our 300 MB "System Reserved" NTFS stayed behind unused. v7: after a successful conversion `:CleanupPrep` re-runs the old-boot-partition survey with `ONLYLEGACY=1` (EFI-type partitions are skipped — that is mbr2gpt's new ESP) and deletes the leftover.
+- **Unallocated ("black") space** (explicit user request: remove it). Empty space cannot be "deleted"; it can only be absorbed by the partition directly in front of it. `:ExtendWin` runs `extend` on the Windows volume (absorbs contiguous free space AFTER it; failure = nothing adjacent, only logged), and `:DiskFree` reports any remainder from `list disk`'s Free column with the reason. Free space BEFORE Windows, or after an ESP that sits behind Windows, needs Windows to be moved — deliberately not done (that is exactly the kind of operation that destroyed a disk in v6.1).
+
 ## v6 (2026-09-23): only UEFI+GPT or Legacy+MBR, old boot partitions are deleted, pure batch again
 
 Explicit user decisions: (1) exactly two outcomes — **UEFI on a GPT disk** or **Legacy on an MBR disk**; UEFI-on-MBR (v3–v5 fallback: FAT32 `id=ef` on MBR) is gone; (2) the tool **deletes the disk's existing boot partition(s)** and writes a new one of the chosen kind; (3) must run from WinPE AND from another bootable Windows (USB-attached target).

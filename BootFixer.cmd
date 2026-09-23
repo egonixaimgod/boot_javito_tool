@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 title BootFixer
 rem =====================================================
-rem   BOOTFIXER v6 - a boot particio ujrairasa
+rem   BOOTFIXER v7 - a boot particio ujrairasa
 rem
 rem   1. lemez kivalasztasa (azon a lemezen kell lennie a Windowsnak)
 rem   2. boot mod: UEFI (GPT lemez) vagy Legacy BIOS (MBR lemez) -
@@ -36,7 +36,7 @@ set "DRV=%TMPD%\bf_drv.txt"
 rem --- Log fajl: eloszor a script mappaja, ha az nem irhato, a temp ---
 set "LOG=%~dp0bootfixer_log.txt"
 (type nul >>"%LOG%") 2>nul || set "LOG=%TMPD%\bootfixer_log.txt"
->"%LOG%" echo ===== BootFixer v6 log - %DATE% %TIME% =====
+>"%LOG%" echo ===== BootFixer v7 log - %DATE% %TIME% =====
 
 rem --- Admin ellenorzes + UAC onfelemeles ---
 rem WinPE alatt nincs UAC es minden eleve adminkent fut, de a fltmc ott
@@ -87,7 +87,7 @@ cls
 echo.
 echo   =============================
 echo        B O O T F I X E R
-echo        v6 - boot particio
+echo        v7 - boot particio
 echo   =============================
 echo.
 echo   Log: %LOG%
@@ -434,6 +434,8 @@ rem   7. MBR lemez + UEFI: atalakitas GPT-re (mbr2gpt)
 rem =====================================================
 set "M2GFAIL="
 if defined VIAM2G call :DoM2G
+call :ExtendWin
+call :DiskFree
 goto DONE
 
 rem =====================================================
@@ -709,6 +711,7 @@ if not defined SMALL (
 )
 set "ISB="
 set "WHY="
+set "TMPL="
 >"%DPS%" (
     echo select disk %SELNUM%
     echo select partition %1
@@ -721,10 +724,16 @@ if not "%DPRC%"=="0" (
 )
 findstr /i /c:"c12a7328" "%DPO%" >nul 2>&1 && set "ISB=1" && set "WHY=EFI rendszerparticio"
 findstr /i /r /c:": *ef *$" "%DPO%" >nul 2>&1 && set "ISB=1" && set "WHY=EFI tipusu particio"
+rem Az mbr2gpt utani takaritasnal csak a Legacy boot particio torolheto -
+rem az EFI particio az, amit az mbr2gpt az imen hozott letre.
+if defined ONLYLEGACY if defined ISB (
+    >>"%LOG%" echo Particio %1: EFI particio az atalakitas utan - marad.
+    set "ISB="
+    goto ClassifyEnd
+)
 rem Meglevo betujel a kotet-sorbol: "* Volume 3   E   SYSTEM   FAT32 ..."
 set "EXL="
 for /f "usebackq tokens=1-4" %%a in ("%DPO%") do if "%%a"=="*" call :VolLetter "%%c" "%%d"
-set "TMPL="
 if not defined EXL (
     call :FreeLetter
     if defined BL (
@@ -1027,11 +1036,73 @@ if "%RC%"=="0" if defined GPTNOW (
     echo   [OK] A lemez most GPT, a UEFI boot kesz.
     set "BCDFW=UEFI"
     set "PSTYLE=GPT"
+    call :CleanupPrep
     goto :eof
 )
 echo   [HIBA] Az atalakitas nem sikerult - mbr2gpt kod: %RC%, GPT: %GPTNOW%. Reszletek a logban.
 call :M2GErrLog
 set "M2GFAIL=1"
+goto :eof
+
+:CleanupPrep
+rem Sikeres mbr2gpt utan az ideiglenes Legacy boot particiora nincs szukseg:
+rem az mbr2gpt sajat EFI particiot hozott letre (terepen merve: a Windows
+rem kotet zsugoritasaval, nem a mienk ujrahasznositasaval). Ugyanaz a
+rem felmeres, mint az elejen, de az EFI particio kimarad (ONLYLEGACY).
+echo   Az ideiglenes Legacy boot particio eltavolitasa...
+call :FindWinPart
+if not defined WINPART (
+    echo   [FIGYELEM] A Windows particio nem azonosithato - az ideiglenes particio marad.
+    goto :eof
+)
+set "ONLYLEGACY=1"
+call :FindBootParts
+set "ONLYLEGACY="
+if not defined DELLIST (
+    echo   [INFO] Nincs eltavolitando ideiglenes particio.
+    goto :eof
+)
+call :DeleteBootParts
+if defined DELFAIL echo   [FIGYELEM] Az ideiglenes particio torlese nem sikerult - a bootot nem zavarja.
+set "DELFAIL="
+goto :eof
+
+:ExtendWin
+rem A Windows kotet atveszi a KOZVETLENUL mogotte levo szabad helyet.
+rem Ha nincs ilyen, a diskpart hibat ad - az nem hiba, csak naplozzuk.
+>"%DPS%" (
+    echo select volume %SELWIN%
+    echo extend
+)
+call :DPRun
+if "%DPRC%"=="0" (
+    echo   [OK] A Windows kotet atvette a mogotte levo szabad helyet.
+) else (
+    >>"%LOG%" echo extend: a Windows mogott nincs kozvetlen szabad hely - nincs mit hozzaadni.
+)
+goto :eof
+
+:DiskFree
+rem Maradt-e nem lefoglalt terulet a lemezen (list disk "Free" oszlop).
+set "DFREE="
+>"%DPS%" echo list disk
+call :DPRun
+for /f "usebackq tokens=1-7" %%a in ("%DPO%") do if "%%b"=="%SELNUM%" call :DiskFreeLine "%%a" "%%f" "%%g"
+if not defined DFREE goto :eof
+echo   [INFO] Maradt %DFREE% nem lefoglalt terulet a lemezen. Ez nem a Windows mogott
+echo          van, ezert a Windows nem tudja atvenni - ahhoz a Windows particiot el
+echo          kellene tolni, amit ez a script nem csinal. A bootot nem zavarja.
+goto :eof
+
+:DiskFreeLine
+set "F1=%~1"
+if /i not "!F1!"=="Disk" if /i not "!F1!"=="Lemez" goto :eof
+set "FV=%~2"
+set "FU=%~3"
+if "!FV!"=="0" goto :eof
+if /i "!FU!"=="KB" goto :eof
+if /i "!FU!"=="MB" if !FV! LSS 2 goto :eof
+set "DFREE=!FV! !FU!"
 goto :eof
 
 :M2GRun
