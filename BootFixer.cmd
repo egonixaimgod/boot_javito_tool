@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 title BootFixer
 rem =====================================================
-rem   BOOTFIXER v4 - UJ boot particio letrehozasa
+rem   BOOTFIXER v5 - UJ boot particio letrehozasa
 rem
 rem   1. lemez kivalasztasa (azon a lemezen kell lennie a Windowsnak)
 rem   2. boot mod: UEFI vagy Legacy BIOS / MBR
@@ -42,7 +42,7 @@ rem --- Log fajl: eloszor a script mappaja (USB stick - ujrainditas utan is
 rem     megmarad), ha az nem irhato, akkor a temp konyvtar ---
 set "LOG=%~dp0bootfixer_log.txt"
 (type nul >>"%LOG%") 2>nul || set "LOG=%TMPD%\bootfixer_log.txt"
->"%LOG%" echo ===== BootFixer v4 log - %DATE% %TIME% =====
+>"%LOG%" echo ===== BootFixer v5 log - %DATE% %TIME% =====
 
 rem --- Admin ellenorzes + UAC onfelemeles ---
 rem WinPE alatt nincs UAC es minden eleve adminkent fut, de a fltmc ott
@@ -95,7 +95,7 @@ cls
 echo.
 echo   =============================
 echo        B O O T F I X E R
-echo        v4 - uj boot particio
+echo        v5 - uj boot particio
 echo   =============================
 echo.
 echo   Log: %LOG%
@@ -223,18 +223,9 @@ set "SETID="
 set /a SHR=SIZE+16
 set "MODE=UEFI"
 set "PTYPE=efi"
-rem UEFI modban a bcdboot a FUTO gep firmware "Windows Boot Manager"
-rem bejegyzeset is atirja az uj particiora (nincs kapcsolo, ami kihagyna).
-rem Egy masik Windowsbol, USB-adapteren at ez a gazdagep sajat bejegyzeset
-rem iranyitana a kidughato lemezre - ezert UEFI csak WinPE-bol.
-if not defined ISPE (
-    echo.
-    echo   [HIBA] UEFI boot particiot ez a script csak WinPE-bol ir.
-    echo          UEFI modban a bcdboot annak a gepnek a firmware boot-bejegyzeset irja at,
-    echo          amelyiken fut - egy masik Windowsbol a sajat bejegyzeset iranyitana erre a lemezre.
-    echo          Tedd a lemezt abba a gepbe, amelyikbol bootolni fog, es inditsd Strelec WinPE-rol.
-    goto ASKMODE
-)
+rem UEFI teljes Windowsbol is fut (explicit user decision, 2026-09-23 - a v4
+rem WinPE-zara visszavonva). A bcdboot ilyenkor a futo gep firmware boot-
+rem bejegyzeset is atirhatja - ezt a :DONE vegen figyelmeztetes mondja ki.
 if "%SELGPT%"=="1" goto CONFIRM
 rem MBR lemez + UEFI: eloszor GPT-re alakitas (ez a tiszta megoldas).
 echo.
@@ -501,6 +492,12 @@ echo     - a SATA mod maradjon azon, amin a Windows telepult - altalaban AHCI.
 echo       Ha RAID-re vagy IDE-re allitod, a Windows INACCESSIBLE_BOOT_DEVICE hibaval all le.
 if "%BCDFW%"=="UEFI" if "%FWMODE%"=="Legacy BIOS" echo   [FIGYELEM] Ez a gep most Legacy modban fut - a BIOS-ban at kell allitani UEFI-re.
 if "%BCDFW%"=="BIOS" if "%FWMODE%"=="UEFI" echo   [FIGYELEM] Ez a gep most UEFI modban fut - a BIOS-ban be kell kapcsolni a CSM/Legacy modot.
+if "%BCDFW%"=="UEFI" if not defined ISPE (
+    echo.
+    echo   [INFO] A bcdboot UEFI modban ennek a gepnek - amin most futtattad - a boot
+    echo          bejegyzeset is atallithatja az uj lemezre. Ha ez a gep utana nem indulna,
+    echo          a sajat Windowsabol vagy WinPE-bol ez visszaallitja: bcdboot C:\Windows
+)
 echo.
 echo   Reszletes log: %LOG%
 goto END

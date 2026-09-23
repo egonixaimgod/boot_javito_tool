@@ -16,7 +16,11 @@ There is no build step, no tests, no dependencies. The `.cmd` file is the entire
 - `diskpart` output parsing must accept both English and Hungarian tokens (`Disk`/`Lemez`, `Partition`/`Partíció` matched via `Part` prefix, `System`/`Rendszer`), and must filter header lines (they contain `###`).
 - **GPT vs MBR is detected from `uniqueid disk`, not from the `*` in `list disk`.** GPT prints a GUID (`Disk ID: {…-XXXX-…}`), MBR an 8-hex signature. The old `find "*"` on the `list disk` line was wrong: both the `Gpt` and `Dyn` columns render `*`, so a dynamic MBR disk got misclassified as GPT. The GUID test uses regex `-[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-`, which is locale-independent and immune to a hyphen in the machine name (only one dash).
 
-## v4 (2026-09-23): UEFI only from WinPE, running system disk refused
+## v5 (2026-09-23): the v4 WinPE-only UEFI gate is REVERSED — must work from WinPE AND from another bootable Windows
+
+Explicit user decision, strongly worded: the real workflow is booting ANOTHER Windows, attaching the broken SSD over USB, and running the tool there. v4 blocked UEFI outside WinPE on my own initiative — nobody asked for it, and it broke the working workflow. **Never add a restriction the user did not ask for; state the risk and ask.** The firmware-entry risk stays documented below, but it is now only an `[INFO]` line at the end of a UEFI run outside WinPE, with the remedy (`bcdboot C:\Windows` on the host). The running-system-disk guard from v4 stays (it does not affect the USB workflow).
+
+## v4 (2026-09-23): UEFI only from WinPE, running system disk refused (UEFI gate reversed in v5)
 
 - **`bcdboot /f UEFI` rewrites the firmware "Windows Boot Manager" entry of the machine it RUNS on** (there is no switch to skip it; `/offline` is about bootex file selection, `/p` and `/addlast` only change its position). Run from another Windows with the target disk in a USB adapter (the user's real workflow), it would redirect the HOST's own boot entry to the removable disk. So UEFI mode refuses unless `ISPE` (WinPE), and tells the tech to put the disk in the machine it will boot from and start Strelec. `bcdboot /f BIOS` does not touch firmware entries, so Legacy stays allowed in full Windows.
 - In full Windows the disk holding `%SystemDrive%` cannot be picked (its boot is live; editing it from itself is not a repair).
