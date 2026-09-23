@@ -2,14 +2,15 @@
 setlocal EnableExtensions EnableDelayedExpansion
 title BootFixer
 rem =====================================================
-rem   BOOTFIXER v6.1 - UJ boot particio letrehozasa
+rem   BOOTFIXER v3 - UJ boot particio letrehozasa
 rem
 rem   1. lemez kivalasztasa (azon a lemezen kell lennie a Windowsnak)
 rem   2. boot mod: UEFI vagy Legacy BIOS / MBR
-rem   3. ha a particios tabla nem illik a modhoz (Legacy = MBR kell,
-rem      UEFI = GPT a helyes), atalakitja ADATVESZTES NELKUL: a Windows
-rem      particio bajtra ugyanoda kerul vissza, a Windows meghajto-betu
-rem      terkepe (MountedDevices) az uj azonositora frissul
+rem   3. a particios tablat NEM alakitja at (2026-09-23 ota KIKAPCSOLVA,
+rem      mert az elso eles futas tonkretett egy lemezt): UEFI + MBR lemez
+rem      eseten FAT32 boot particio ESP tipussal, Legacy + GPT lemez
+rem      eseten elutasitja. A beagyazott PowerShell resz a fajl vegen
+rem      marad, de a :ConvPlan nem engedi lefutni.
 rem   4. UJ boot particio a lemezen (a Windows kotet zsugoritasabol,
 rem      ha nincs szabad hely)
 rem   5. boot fajlok irasa az uj particiora (bcdboot)
@@ -41,7 +42,7 @@ rem --- Log fajl: eloszor a script mappaja (USB stick - ujrainditas utan is
 rem     megmarad), ha az nem irhato, akkor a temp konyvtar ---
 set "LOG=%~dp0bootfixer_log.txt"
 (type nul >>"%LOG%") 2>nul || set "LOG=%TMPD%\bootfixer_log.txt"
->"%LOG%" echo ===== BootFixer v6.1 log - %DATE% %TIME% =====
+>"%LOG%" echo ===== BootFixer v3 log - %DATE% %TIME% =====
 
 rem --- Admin ellenorzes + UAC onfelemeles ---
 rem WinPE alatt nincs UAC es minden eleve adminkent fut, de a fltmc ott
@@ -94,7 +95,7 @@ cls
 echo.
 echo   =============================
 echo        B O O T F I X E R
-echo        v6.1 - uj boot particio
+echo        v3 - uj boot particio
 echo   =============================
 echo.
 echo   Log: %LOG%
@@ -789,6 +790,11 @@ goto :eof
 :ConvPlan
 rem Csak ELLENORZES (semmit nem ir): atalakithato-e a lemez %1 tablara.
 set "CV_STATUS=" & set "CV_MSG=" & set "CV_DROP=" & set "CV_CHANGED=" & set "CV_REG="
+rem KIKAPCSOLVA (2026-09-23): az elso eles futas egy lemez particios tablajat
+rem tonkretette. Amig VHD-n vegig nem ment, a tablat NEM alakitjuk at.
+set "CV_STATUS=ERR"
+set "CV_MSG=a particios tabla atalakitasa ebben a verzioban ki van kapcsolva"
+goto :eof
 if not defined ISPE if /i "%SELWIN%"=="%SystemDrive:~0,1%" (
     set "CV_STATUS=ERR"
     set "CV_MSG=ez a most futo Windows lemeze - az atalakitashoz inditsd a gepet WinPE-rol"
@@ -815,7 +821,9 @@ rem %1 = plan/run, %2 = GPT/MBR. Eredmeny: CV_STATUS, CV_MSG, CV_DROP, CV_CHANGE
 del "%CVO%" >nul 2>&1
 >>"%LOG%" echo.
 >>"%LOG%" echo ===== tabla-atalakitas: %1 %2 - lemez %SELNUM%, Windows %SELWIN%:, zsugoritas %SHR% MB =====
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -Disk %SELNUM% -Target %2 -Win %SELWIN% -ShrinkMB %SHR% -Mode %1 -Log "%LOG%" -Out "%CVO%" 2>>"%LOG%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -Disk %SELNUM% -Target %2 -Win %SELWIN% -ShrinkMB %SHR% -Mode %1 -Log "%LOG%" -Out "%CVO%" 2>"%TMPD%\bf_ps_err.txt"
+type "%TMPD%\bf_ps_err.txt" >>"%LOG%" 2>nul
+del "%TMPD%\bf_ps_err.txt" >nul 2>&1
 if not exist "%CVO%" (
     set "CV_STATUS=ERR"
     set "CV_MSG=a PowerShell resz hibaval leallt - reszletek a logban"
